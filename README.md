@@ -1,15 +1,17 @@
 # Lecture Ink — 講義スライドへの手書き
 
-iPadのObsidianで、PDFの講義スライドにペン・蛍光ペンで書き込み、日本語UIで復習するための個人用forkです。
+iPadのObsidianで、PDFの講義スライドにペン・蛍光ペンで書き込み、日本語UIで復習するための個人向けプラグインです。GitHub上では、元リポジトリから独立した公開プロジェクトとして管理しています。
 
 [Mobile Ink Annotation](https://github.com/jepicaju862-lab/mobile-ink-annotation) の公開Basic版（upstream commit `ac4f810fe767e44a5a7adf4303a1ad74566b1165`）から派生しています。元作者はpeyote / jepicaju862-labです。有料Pro版のコード・配布物は使用していません。
+
+改変開始日：2026年10月9日。日本語化、PDF書き出し、保存と入力サイズの保護を追加しています。GitHub上の独立化後も、派生元のGPL-3.0-or-laterと作者表記を引き継ぎます。
 
 ## できること
 
 - iPad / Apple Pencil向けの手書き、蛍光ペン、消しゴムと自動保存（上流の機能）。
 - ペンで書き、指でページを移動。文字のハイライト・下線・取り消し線・コメント。
 - 操作ラベル、設定、メッセージ、ページ移動を日本語化。
-- **書き込み入りPDFを別ファイルに保存**（このforkで独自実装）。
+- **書き込み入りPDFを別ファイルに保存**（Lecture Inkで独自実装）。
 - PDFへの書き出しにネット接続、アカウント、外部サービスは不要。
 
 ## iPadへの導入（BRAT）
@@ -21,7 +23,7 @@ iPadのObsidianで、PDFの講義スライドにペン・蛍光ペンで書き�
 5. 講義PDFをVaultに入れて開き、コマンドパレットで **現在のファイルに手書き注釈を付ける** を実行します。
 6. 設定の **PDFを注釈画面で開く** をオンにすると、以後はPDFをタップするだけでこの画面が開きます。
 
-元のMobile Ink Annotationと同じPDFに同時に書き込むのは避けてください。このforkは別のプラグインID・画面・データ保存先を使います。
+元のMobile Ink Annotationと同じPDFに同時に書き込むのは避けてください。Lecture Inkは別のプラグインID・画面・データ保存先を使います。
 
 ## 書き込み入りPDFの保存と共有
 
@@ -46,7 +48,7 @@ iPadのObsidianで、PDFの講義スライドにペン・蛍光ペンで書き�
 
 1. 以前のプラグインで保存し、PDFとVaultをバックアップします。
 2. Obsidianを閉じて、以前の `.obsidian/plugins/mobile-ink-annotation-basic/annotations/` のファイルを、新しい `.obsidian/plugins/obsidian-lecture-ink/annotations/` に**コピー**します。元のデータは残します。
-3. PDFのファイル名・Vault内の場所は変えずに、このforkで開いて内容を確認します。
+3. PDFのファイル名・Vault内の場所は変えずに、Lecture Inkで開いて内容を確認します。
 
 注釈ファイル名には元PDFのパスから計算した値が含まれるため、元PDFの移動・名前変更で注釈が見えなくなる場合があります。この点は上流と同じです。プラグインを削除する前には注釈データのバックアップと書き込み入りPDFの出力を行ってください。
 
