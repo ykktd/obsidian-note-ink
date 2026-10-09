@@ -39,7 +39,7 @@ export class StrokeStore {
         updatedAt: parsed.updatedAt ?? Date.now()
       };
     } catch (error) {
-      console.error("Mobile 講義スライドの手書き: failed to read annotation file", error);
+      console.error("Note Ink: failed to read annotation file", error);
       throw new Error("保存済みの注釈を読み込めません。上書きを防ぐため、ファイルを開くのを中止しました。");
     }
   }
@@ -98,7 +98,7 @@ export class StrokeStore {
         updatedAt: parsed.updatedAt ?? Date.now()
       };
     } catch (error) {
-      console.error("Mobile 講義スライドの手書き: failed to read standalone ink file", error);
+      console.error("Note Ink: failed to read standalone ink file", error);
       return this.createEmpty(path, 0, pageWidth, pageHeight);
     }
   }

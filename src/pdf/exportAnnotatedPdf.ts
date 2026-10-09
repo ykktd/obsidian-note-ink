@@ -118,7 +118,7 @@ export async function exportAnnotatedPdf(
           const ref=doc.context.register(doc.context.obj({
             Type:PDFName.of('Annot'),Subtype:PDFName.of('Text'),
             Rect:[x,y,x+16,y+16],Contents:PDFHexString.fromText(note.note!),
-            T:PDFHexString.fromText('Lecture Ink'),Name:PDFName.of('Comment'),
+            T:PDFHexString.fromText('Note Ink'),Name:PDFName.of('Comment'),
             F:PDFNumber.of(4),P:page.ref,NM:PDFString.of(`lecture-ink-${note.id}`),
           }));
           page.node.addAnnot(ref);

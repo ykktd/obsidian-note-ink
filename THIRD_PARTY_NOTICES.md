@@ -1,6 +1,6 @@
 # Third-party notices
 
-Lecture Ink is derived from Mobile Ink Annotation by peyote / jepicaju862-lab:
+Note Ink is derived from Mobile Ink Annotation by peyote / jepicaju862-lab:
 https://github.com/jepicaju862-lab/mobile-ink-annotation
 Licensed under GPL-3.0-or-later; the original LICENSE is retained.
 

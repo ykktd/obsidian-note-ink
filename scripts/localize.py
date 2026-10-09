@@ -26,7 +26,7 @@ translations = {
 '置于顶层':'最前面に移動','上移一层':'一つ前に移動','下移一层':'一つ後ろに移動','置于底层':'最背面に移動',
 'PDF 文本批注':'PDFの文字注釈','PDF 批注操作':'PDFの注釈操作','PDF 区域':'PDFの範囲','PDF 批注':'PDFの注釈','输入批注内容':'注釈を入力','Ctrl / Cmd + Enter 保存':'Ctrl / Cmd + Enterで保存','取消':'キャンセル','附注':'コメント','批注':'注釈','高亮':'ハイライト',
 'Open mobile ink annotation for current note':'現在のファイルに手書き注釈を付ける',
-'Ink Annotation':'講義スライドの手書き','Handwriting:':'手書き：','Ink:':'注釈：',
+'Ink Annotation':'Note Ink','Handwriting:':'手書き：','Ink:':'注釈：',
 'PDF page navigation':'PDFのページ移動','PDF page number':'PDFのページ番号','First page':'最初のページ','Previous page':'前のページ','Next page':'次のページ','Last page':'最後のページ','Page navigation':'ページ移動',
 'PDF page ${pageNumber} text':'PDFの${pageNumber}ページの文字','PDF page ${pageNumber}':'PDFの${pageNumber}ページ',
 }

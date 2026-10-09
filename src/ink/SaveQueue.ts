@@ -6,7 +6,7 @@ export class SaveQueue {
   constructor(
     private readonly saveFn: () => Promise<void>,
     private readonly debounceMs = 800,
-    private readonly onError: (error: unknown) => void = error => console.error('Lecture Ink: failed to save',error),
+    private readonly onError: (error: unknown) => void = error => console.error('Note Ink: failed to save',error),
   ) {}
 
   markDirty(): void {

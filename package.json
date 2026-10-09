@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-lecture-ink",
-  "version": "1.1.0",
+  "name": "obsidian-note-ink",
+  "version": "1.1.1",
   "private": true,
   "license": "GPL-3.0-or-later",
   "scripts": {

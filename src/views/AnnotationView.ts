@@ -249,7 +249,7 @@ export class AnnotationView extends FileView {
   }
 
   getDisplayText(): string {
-    const name = this.sourcePath ? this.sourcePath.split("/").pop() : "講義スライドの手書き";
+    const name = this.sourcePath ? this.sourcePath.split("/").pop() : "Note Ink";
     return this.standalone ? `手書き： ${name}` : `注釈： ${name}`;
   }
 
@@ -267,7 +267,7 @@ export class AnnotationView extends FileView {
         .setTitle("注釈を保存")
         .setIcon("save")
         .onClick(() => {
-          void this.saveCurrentAnnotation().catch(error => console.error("Lecture Ink: save failed", error));
+          void this.saveCurrentAnnotation().catch(error => console.error("Note Ink: save failed", error));
         });
     });
 
@@ -409,7 +409,7 @@ export class AnnotationView extends FileView {
         .setTitle("注釈画面を閉じる")
         .setIcon("x")
         .onClick(() => {
-          void this.exitAnnotationView().catch(error => console.error("Lecture Ink: close failed", error));
+          void this.exitAnnotationView().catch(error => console.error("Note Ink: close failed", error));
         });
     });
   }
@@ -733,7 +733,7 @@ export class AnnotationView extends FileView {
       }
       this.refreshToolbarState();
     } catch (error) {
-      console.error("Lecture Ink: cannot open annotation view", error);
+      console.error("Note Ink: cannot open annotation view", error);
       this.engine?.destroy(); this.engine=null;
       this.contentEl.empty();
       this.contentEl.createDiv({cls:"mobile-ink-status",text:error instanceof Error ? error.message : "ファイルを開けませんでした。"});
@@ -957,7 +957,7 @@ export class AnnotationView extends FileView {
     const action = this.addAction(icon, title, (event) => {
       event.preventDefault();
       this.closeToolbarPopovers();
-      Promise.resolve(onClick(event)).catch(error => console.error("Lecture Ink: action failed", error));
+      Promise.resolve(onClick(event)).catch(error => console.error("Note Ink: action failed", error));
     });
     action.addClass("mobile-ink-titlebar-action");
     return action;
@@ -1003,7 +1003,7 @@ export class AnnotationView extends FileView {
       notice.setMessage(`保存しました：${path}\n元のPDFはそのまま残っています。`);
       window.setTimeout(()=>notice.hide(),8000);
     } catch (error) {
-      console.error("Lecture Ink: PDF export failed",error);
+      console.error("Note Ink: PDF export failed",error);
       notice.hide();
       new Notice(`PDFを保存できませんでした。${error instanceof Error ? error.message : "空き容量と保存先を確認してください。"}`,10000);
     } finally {
@@ -1106,7 +1106,7 @@ export class AnnotationView extends FileView {
         this.suppressToolbarClick = false;
         return;
       }
-      Promise.resolve(onClick()).catch(error => console.error("Lecture Ink: action failed", error));
+      Promise.resolve(onClick()).catch(error => console.error("Note Ink: action failed", error));
     });
     return button;
   }
@@ -1318,7 +1318,7 @@ export class AnnotationView extends FileView {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      Promise.resolve(onClick(event)).catch(error => console.error("Lecture Ink: action failed", error));
+      Promise.resolve(onClick(event)).catch(error => console.error("Note Ink: action failed", error));
     });
     return button;
   }
@@ -1337,7 +1337,7 @@ export class AnnotationView extends FileView {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      Promise.resolve(onClick()).catch(error => console.error("Lecture Ink: action failed", error));
+      Promise.resolve(onClick()).catch(error => console.error("Note Ink: action failed", error));
     });
     return button;
   }
@@ -2358,7 +2358,7 @@ export class AnnotationView extends FileView {
     if (key === "s") {
       event.preventDefault();
       event.stopPropagation();
-      void this.saveCurrentAnnotation().catch(error => console.error("Lecture Ink: save failed", error));
+      void this.saveCurrentAnnotation().catch(error => console.error("Note Ink: save failed", error));
       return;
     }
 
@@ -2915,7 +2915,7 @@ export class AnnotationView extends FileView {
         const parsed = JSON.parse(await this.app.vault.adapter.read(path)) as { items?: unknown };
         return Array.isArray(parsed.items) ? parsed.items : [];
       } catch (error) {
-        console.warn("Mobile 講義スライドの手書き: failed to read custom sticker manifest", error);
+        console.warn("Note Ink: failed to read custom sticker manifest", error);
         new Notice(`ステッカーの設定を読み込めません：${path}`);
         return [];
       }
@@ -3501,7 +3501,7 @@ export class AnnotationView extends FileView {
 
     if (documentToDestroy?.destroy) {
       void Promise.resolve(documentToDestroy.destroy()).catch((error) => {
-        console.warn("Mobile 講義スライドの手書き: failed to destroy PDF document", error);
+        console.warn("Note Ink: failed to destroy PDF document", error);
       });
     }
   }
@@ -3803,10 +3803,10 @@ export class AnnotationView extends FileView {
 
     try {
       void Promise.resolve(pdf.cleanup(true)).catch((error) => {
-        console.warn("Mobile 講義スライドの手書き: failed to cleanup PDF document caches", error);
+        console.warn("Note Ink: failed to cleanup PDF document caches", error);
       });
     } catch (error) {
-      console.warn("Mobile 講義スライドの手書き: failed to cleanup PDF document caches", error);
+      console.warn("Note Ink: failed to cleanup PDF document caches", error);
     }
   }
 
@@ -3940,7 +3940,7 @@ export class AnnotationView extends FileView {
       this.renderPdfTextAnnotationsForPage(entry);
     } catch (error) {
       if (!this.isPdfRenderCancelled(error)) {
-        console.error(`Mobile 講義スライドの手書き: failed to render PDF page ${entry.pageNumber}`, error);
+        console.error(`Note Ink: failed to render PDF page ${entry.pageNumber}`, error);
         entry.pageEl.addClass("mobile-ink-pdf-page-error");
       }
     } finally {
@@ -5450,7 +5450,7 @@ export class AnnotationView extends FileView {
         return pdf;
       } catch (error) {
         lastError = error;
-        console.warn(`Mobile 講義スライドの手書き: selectable PDF attempt failed (${attempt.label})`, error);
+        console.warn(`Note Ink: selectable PDF attempt failed (${attempt.label})`, error);
       }
     }
 
@@ -5486,11 +5486,11 @@ export class AnnotationView extends FileView {
       try {
         jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, true, "svg");
       } catch (error) {
-        console.warn("Mobile 講義スライドの手書き: selectable PDF visible layer was unsafe; retrying without embedded images", error);
+        console.warn("Note Ink: selectable PDF visible layer was unsafe; retrying without embedded images", error);
         try {
           jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, false, "svg");
         } catch (formulaOrImageError) {
-          console.warn("Mobile 講義スライドの手書き: selectable PDF formula rendering failed; retrying with formula text fallback", formulaOrImageError);
+          console.warn("Note Ink: selectable PDF formula rendering failed; retrying with formula text fallback", formulaOrImageError);
           jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, false, "text");
         }
       }
@@ -6135,7 +6135,7 @@ ${pages}
         context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
         return true;
       } catch (dataUrlError) {
-        console.warn("Mobile 講義スライドの手書き: failed to draw Markdown formula SVG into PDF canvas", blobError, dataUrlError);
+        console.warn("Note Ink: failed to draw Markdown formula SVG into PDF canvas", blobError, dataUrlError);
         return false;
       }
     }
@@ -6168,7 +6168,7 @@ ${pages}
       context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
       return true;
     } catch (error) {
-      console.warn("Mobile 講義スライドの手書き: failed to snapshot Markdown formula into PDF canvas", error);
+      console.warn("Note Ink: failed to snapshot Markdown formula into PDF canvas", error);
       return false;
     }
   }
@@ -8099,7 +8099,7 @@ svg { overflow: visible !important; }
 
       entry.textRendered = true;
     } catch (error) {
-      console.warn(`Mobile 講義スライドの手書き: failed to render PDF text layer ${entry.pageNumber}`, error);
+      console.warn(`Note Ink: failed to render PDF text layer ${entry.pageNumber}`, error);
     } finally {
       entry.textRendering = false;
     }
