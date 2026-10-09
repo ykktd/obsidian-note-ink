@@ -31,13 +31,13 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
     this.addSettingTab(new MobileInkAnnotationSettingTab(this.app, this));
 
-    this.addRibbonIcon("pencil", "打开手写标注", async () => {
+    this.addRibbonIcon("pencil", "手書き注釈を開く", async () => {
       await this.openInkForActiveFile();
     });
 
     this.addCommand({
       id: "open-mobile-ink-annotation",
-      name: "Open mobile ink annotation for current note",
+      name: "現在のファイルに手書き注釈を付ける",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && (file.extension === "md" || file.extension === "pdf");
@@ -46,6 +46,17 @@ export default class MobileInkAnnotationPlugin extends Plugin {
           void this.openInkForFile(file);
         }
         return true;
+      }
+    });
+    this.addCommand({
+      id: "export-annotated-pdf",
+      name: "書き込み入りPDFを保存",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(AnnotationView);
+        const file = this.app.workspace.getActiveFile();
+        const canRun = !!view && file instanceof TFile && file.extension === "pdf";
+        if (!checking && canRun) void view!.exportPdfCopy();
+        return canRun;
       }
     });
   }
@@ -57,12 +68,12 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   async openInkForActiveFile(): Promise<void> {
     const file = this.app.workspace.getActiveFile();
     if (!(file instanceof TFile)) {
-      new Notice("请先打开一个 Markdown 笔记或 PDF 文件");
+      new Notice("まずMarkdownノートまたはPDFを開いてください。");
       return;
     }
 
     if (file.extension !== "md" && file.extension !== "pdf") {
-      new Notice("当前版本只支持 Markdown 笔记或 PDF 文件标注");
+      new Notice("注釈を付けられるのはMarkdownノートとPDFです。");
       return;
     }
 
@@ -168,8 +179,8 @@ class MobileInkAnnotationSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("PDF 默认使用标注视图打开")
-      .setDesc("开启后，点击 PDF 文件会自动切换到本插件的 PDF 标注视图，并显示已保存的手写标注、文字高亮、下划线和批注。关闭后，之后打开 PDF 会继续使用 Obsidian 原生 PDF 视图。")
+      .setName("PDFを注釈画面で開く")
+      .setDesc("PDFを開くと、保存済みの手書きやハイライトを表示する注釈画面に切り替えます。オフの場合はObsidian標準のPDFビューアーで開きます。")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.openPdfWithAnnotationByDefault)
@@ -178,9 +189,9 @@ class MobileInkAnnotationSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             if (value) {
               this.plugin.openActivePdfWithAnnotationIfEnabled();
-              new Notice("已开启 PDF 默认标注视图。");
+              new Notice("PDFを注釈画面で開くように設定しました。");
             } else {
-              new Notice("已关闭 PDF 默认标注视图，之后打开 PDF 将使用 Obsidian 原生视图。");
+              new Notice("PDFはObsidian標準のビューアーで開きます。");
             }
           });
       });

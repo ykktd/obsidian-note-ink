@@ -39,8 +39,8 @@ export class StrokeStore {
         updatedAt: parsed.updatedAt ?? Date.now()
       };
     } catch (error) {
-      console.error("Mobile Ink Annotation: failed to read annotation file", error);
-      return this.createEmpty(sourcePath, sourceMtime, pageWidth, pageHeight);
+      console.error("Mobile 講義スライドの手書き: failed to read annotation file", error);
+      throw new Error("保存済みの注釈を読み込めません。上書きを防ぐため、ファイルを開くのを中止しました。");
     }
   }
 
@@ -98,7 +98,7 @@ export class StrokeStore {
         updatedAt: parsed.updatedAt ?? Date.now()
       };
     } catch (error) {
-      console.error("Mobile Ink Annotation: failed to read standalone ink file", error);
+      console.error("Mobile 講義スライドの手書き: failed to read standalone ink file", error);
       return this.createEmpty(path, 0, pageWidth, pageHeight);
     }
   }
@@ -276,7 +276,7 @@ function sanitizePdfTextAnnotations(annotations: PdfTextAnnotation[]): PdfTextAn
   return annotations
     .filter((annotation) => annotation && Array.isArray(annotation.rects) && annotation.rects.length > 0)
     .map((annotation): PdfTextAnnotation => {
-      const kind = annotation.kind === "underline" || annotation.kind === "note" ? annotation.kind : "highlight";
+      const kind = annotation.kind === "underline" || annotation.kind === "strikethrough" || annotation.kind === "note" ? annotation.kind : "highlight";
       const pageWidth = Number.isFinite(annotation.pageWidth) && annotation.pageWidth !== undefined && annotation.pageWidth > 0
         ? annotation.pageWidth
         : undefined;

@@ -145,6 +145,7 @@ export type PdfRenderTask = {
 export type PdfJsDocument = {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PdfJsPage>;
+  getData: () => Promise<Uint8Array>;
   cleanup?: (keepLoadedFonts?: boolean) => Promise<void> | void;
   destroy?: () => Promise<void> | void;
 };
@@ -155,6 +156,9 @@ export type PdfJsDocumentSource = {
   cMapPacked?: boolean;
   standardFontDataUrl?: string;
   useWorkerFetch?: boolean;
+  isEvalSupported?: boolean;
+  CMapReaderFactory?: unknown;
+  StandardFontDataFactory?: unknown;
 };
 
 export type PdfJsLib = {

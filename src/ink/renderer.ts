@@ -23,7 +23,7 @@ export function setupCanvas(
     ? options.maxPixels : Number.POSITIVE_INFINITY;
     
   const maxByPixels = Math.sqrt(pixelCap / Math.max(1, width * height));
-  const dpr = Math.max(1, Math.min(targetDpr, maxByPixels));
+  const dpr = Math.min(targetDpr, maxByPixels);
   
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;

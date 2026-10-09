@@ -1,9 +1,10 @@
 {
-  "id": "mobile-ink-annotation-basic",
-  "name": "Mobile Ink Annotation",
-  "version": "1.0.5",
+  "id": "obsidian-lecture-ink",
+  "name": "Lecture Ink（講義スライド手書き）",
+  "version": "1.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Markdown/PDF handwritten annotation with pen, highlighter, eraser, color, width, undo, redo, save, and exit tools, plus PDF text selection annotation (highlight, underline, strikethrough, and notes).",
-  "author": "peyote",
-  "isDesktopOnly": false
+  "description": "iPadで講義PDFに手書き・ハイライトを付け、元のPDFを残して書き込み入りPDFを保存します。",
+  "author": "ykktd (fork of peyote)",
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/ykktd/obsidian-lecture-ink"
 }

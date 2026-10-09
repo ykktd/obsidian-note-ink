@@ -42,7 +42,7 @@ export class PdfPageNavigatorManager {
 
     const nav = root.createDiv({
       cls: "mobile-ink-pdf-page-nav",
-      attr: { "aria-label": "PDF page navigation" }
+      attr: { "aria-label": "PDFのページ移動" }
     });
     this.navEl = nav;
     nav.addEventListener("mousedown", this.onMouseDown, { capture: true });
@@ -50,14 +50,14 @@ export class PdfPageNavigatorManager {
     nav.addEventListener("click", this.onClickFallback, { capture: true });
     nav.addEventListener("mouseleave", this.onMouseLeave);
 
-    this.firstButton = this.createButton(nav, "chevrons-left", "<<", "First page", "first");
-    this.prevButton = this.createButton(nav, "chevron-left", "<", "Previous page", "prev");
+    this.firstButton = this.createButton(nav, "chevrons-left", "<<", "最初のページ", "first");
+    this.prevButton = this.createButton(nav, "chevron-left", "<", "前のページ", "prev");
     this.chipEl = nav.createEl("button", {
       cls: "mobile-ink-pdf-page-chip",
       attr: {
         type: "button",
-        title: "Page navigation",
-        "aria-label": "PDF page navigation",
+        title: "ページ移動",
+        "aria-label": "PDFのページ移動",
         "data-page-action": "toggle"
       }
     });
@@ -68,7 +68,7 @@ export class PdfPageNavigatorManager {
         type: "text",
         inputmode: "numeric",
         autocomplete: "off",
-        "aria-label": "PDF page number"
+        "aria-label": "PDFのページ番号"
       }
     });
     this.inputEl = input;
@@ -78,8 +78,8 @@ export class PdfPageNavigatorManager {
     input.addEventListener("blur", this.onInputBlur);
     input.addEventListener("keydown", this.onInputKeyDown);
 
-    this.nextButton = this.createButton(nav, "chevron-right", ">", "Next page", "next");
-    this.lastButton = this.createButton(nav, "chevrons-right", ">>", "Last page", "last");
+    this.nextButton = this.createButton(nav, "chevron-right", ">", "次のページ", "next");
+    this.lastButton = this.createButton(nav, "chevrons-right", ">>", "最後のページ", "last");
     this.updateNow();
   }
 

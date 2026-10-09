@@ -1,0 +1,22 @@
+{
+  "name": "obsidian-lecture-ink",
+  "version": "1.1.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "22.18.6",
+    "esbuild": "0.25.12",
+    "obsidian": "1.14.4",
+    "pdfjs-dist": "5.4.624",
+    "typescript": "5.9.3"
+  }
+}

@@ -8,6 +8,10 @@ import { SaveQueue } from "../ink/SaveQueue";
 import type { AnnotationFile, InkStroke, MarkdownLayoutSnapshot, PdfTextAnnotation, PdfTextAnnotationKind, StandaloneElement, StandalonePage, StandaloneShapeKind, StandaloneStickerKind, StandaloneTemplate } from "../ink/types";
 import { PdfPageNavigatorManager, type PdfPageNavigatorPage } from "../pdf/PdfPageNavigatorManager";
 import { nextFrame, waitForImages } from "../utils/dom";
+import { BundledCMapReaderFactory, BundledStandardFontDataFactory } from "../pdf/pdfAssetReaders";
+import { assertDimensions, MAX_PDF_PAGE_HEIGHT, MAX_PDF_PAGES } from "../utils/resourceLimits";
+import { exportAnnotatedPdf, type ExportPage } from "../pdf/exportAnnotatedPdf";
+import { saveExportCopy } from "../pdf/saveExportCopy";
 import { stableHash } from "../utils/hash";
 import {
   CSS_PX_PER_MM,
@@ -245,8 +249,8 @@ export class AnnotationView extends FileView {
   }
 
   getDisplayText(): string {
-    const name = this.sourcePath ? this.sourcePath.split("/").pop() : "Ink Annotation";
-    return this.standalone ? `Handwriting: ${name}` : `Ink: ${name}`;
+    const name = this.sourcePath ? this.sourcePath.split("/").pop() : "講義スライドの手書き";
+    return this.standalone ? `手書き： ${name}` : `注釈： ${name}`;
   }
 
   getIcon(): string {
@@ -260,17 +264,17 @@ export class AnnotationView extends FileView {
     menu.addSeparator();
     menu.addItem((item) => {
       item
-        .setTitle("保存标注")
+        .setTitle("注釈を保存")
         .setIcon("save")
         .onClick(() => {
-          void this.saveCurrentAnnotation();
+          void this.saveCurrentAnnotation().catch(error => console.error("Lecture Ink: save failed", error));
         });
     });
 
     if (this.standalone) {
       menu.addItem((item) => {
         item
-          .setTitle("添加图片")
+          .setTitle("画像を追加")
           .setIcon("image-plus")
           .onClick(() => {
             ((...args: any[]) => (null as any))();
@@ -278,16 +282,16 @@ export class AnnotationView extends FileView {
       });
       menu.addItem((item) => {
         item
-          .setTitle("添加形状")
+          .setTitle("図形を追加")
           .setIcon("shapes");
           
         if (typeof (item as any).setSubmenu === "function") {
           const sub = (item as any).setSubmenu();
           const shapes: Array<{ kind: StandaloneShapeKind; label: string; icon: string }> = [
-            { kind: "note", label: "便签框", icon: "sticky-note" },
-            { kind: "rect", label: "矩形框", icon: "square" },
-            { kind: "ellipse", label: "圆形", icon: "circle" },
-            { kind: "line", label: "线条", icon: "minus" }
+            { kind: "note", label: "付箋", icon: "sticky-note" },
+            { kind: "rect", label: "四角形", icon: "square" },
+            { kind: "ellipse", label: "円", icon: "circle" },
+            { kind: "line", label: "線", icon: "minus" }
           ];
           for (const shape of shapes) {
             sub.addItem((subItem: any) => {
@@ -305,7 +309,7 @@ export class AnnotationView extends FileView {
       });
       menu.addItem((item) => {
         item
-          .setTitle("添加贴纸")
+          .setTitle("ステッカーを追加")
           .setIcon("sticker")
           .onClick((event) => {
             void ((...args: any[]) => (null as any))(event as MouseEvent);
@@ -315,18 +319,18 @@ export class AnnotationView extends FileView {
 
     if (this.standalone && this.annotation) {
       const templates: { id: StandaloneTemplate; name: string }[] = [
-        { id: "blank", name: "空白页" },
-        { id: "lined", name: "横线纸" },
-        { id: "grid", name: "方格纸" },
-        { id: "dotted", name: "点阵纸" },
-        { id: "cornell", name: "康奈尔笔记" }
+        { id: "blank", name: "白紙" },
+        { id: "lined", name: "罫線" },
+        { id: "grid", name: "方眼" },
+        { id: "dotted", name: "ドット" },
+        { id: "cornell", name: "コーネル式ノート" }
       ];
       const current = this.annotation.template || "blank";
       
       // Use sub-menu for templates
       menu.addItem((item) => {
         item
-          .setTitle("切换纸张模板")
+          .setTitle("用紙を変更")
           .setIcon("layout-template");
         
         if (typeof (item as any).setSubmenu === "function") {
@@ -367,7 +371,7 @@ export class AnnotationView extends FileView {
         const currentPageNumber = ((...args: any[]) => (null as any))();
         menu.addItem((item) => {
           item
-            .setTitle(`删除第 ${currentPageNumber} 页`)
+            .setTitle(`${currentPageNumber}ページを削除`)
             .setIcon("trash-2")
             .onClick(() => {
               void ((...args: any[]) => (null as any))(currentPageNumber);
@@ -380,21 +384,21 @@ export class AnnotationView extends FileView {
       const state = this.engine?.getToolState();
       menu.addItem((item) => {
         item
-          .setTitle(state?.acceptTouchInput ? "关闭手指书写" : "开启手指书写")
+          .setTitle(state?.acceptTouchInput ? "指での手書きをオフ" : "指での手書きをオン")
           .setIcon("hand")
           .setChecked(state?.acceptTouchInput ?? false)
           .onClick(() => ((...args: any[]) => (null as any))());
       });
     }
 
-    if (false) {
+    if (this.isPdfPath(this.sourcePath)) {
       menu.addItem((item) => {
         item
-          .setTitle("导出 PDF")
+          .setTitle("書き込み入りPDFを保存")
           .setIcon("file-down")
           .setDisabled(this.exportingPdf)
           .onClick(() => {
-            void ((...args: any[]) => (null as any))();
+            void this.exportPdfCopy();
           });
       });
     }
@@ -402,10 +406,10 @@ export class AnnotationView extends FileView {
     menu.addSeparator();
     menu.addItem((item) => {
       item
-        .setTitle("退出标注")
+        .setTitle("注釈画面を閉じる")
         .setIcon("x")
         .onClick(() => {
-          void this.exitAnnotationView();
+          void this.exitAnnotationView().catch(error => console.error("Lecture Ink: close failed", error));
         });
     });
   }
@@ -598,13 +602,13 @@ export class AnnotationView extends FileView {
       this.contentEl.empty();
 
       if (!this.sourcePath) {
-        this.contentEl.createDiv({ cls: "mobile-ink-status", text: "没有指定要标注的笔记。" });
+        this.contentEl.createDiv({ cls: "mobile-ink-status", text: "注釈を付けるファイルが指定されていません。" });
         return;
       }
 
       const file = this.app.vault.getAbstractFileByPath(this.sourcePath);
       if (!(file instanceof TFile)) {
-        this.contentEl.createDiv({ cls: "mobile-ink-status", text: `找不到笔记：${this.sourcePath}` });
+        this.contentEl.createDiv({ cls: "mobile-ink-status", text: `ファイルが見つかりません：${this.sourcePath}` });
         return;
       }
 
@@ -629,8 +633,8 @@ export class AnnotationView extends FileView {
       background.addEventListener("pointercancel", ((...args: any[]) => (null as any)));
       const markdownTextAnnotationLayer = page.createDiv({ cls: "mobile-ink-markdown-text-annotation-layer" });
       const committed = page.createEl("canvas", { cls: "mobile-ink-committed-canvas" });
-      const live = page.createEl("canvas", { cls: "mobile-ink-live-canvas", attr: { "aria-label": "Handwriting layer" } });
-      const selectionLayer = page.createDiv({ cls: "mobile-ink-selection-layer", attr: { "aria-label": "Annotation selection layer" } });
+      const live = page.createEl("canvas", { cls: "mobile-ink-live-canvas", attr: { "aria-label": "手書きエリア" } });
+      const selectionLayer = page.createDiv({ cls: "mobile-ink-selection-layer", attr: { "aria-label": "注釈の選択エリア" } });
       const selectionMarquee = selectionLayer.createDiv({ cls: "mobile-ink-selection-marquee" });
       const selectionBox = selectionLayer.createDiv({ cls: "mobile-ink-selection-box" });
       const captureBox = selectionLayer.createDiv({ cls: "mobile-ink-capture-box" });
@@ -638,7 +642,7 @@ export class AnnotationView extends FileView {
       const captureMenu = selectionLayer.createDiv({ cls: "mobile-ink-selection-menu mobile-ink-capture-menu" });
       const pdfTextMenu = selectionLayer.createDiv({ cls: "mobile-ink-selection-menu mobile-ink-pdf-text-menu" });
       const pdfAnnotationMenu = selectionLayer.createDiv({ cls: "mobile-ink-selection-menu mobile-ink-pdf-annotation-menu" });
-      stage.createDiv({ cls: "mobile-ink-input-shield", attr: { "aria-label": "Pencil input layer" } });
+      stage.createDiv({ cls: "mobile-ink-input-shield", attr: { "aria-label": "ペン入力エリア" } });
 
       this.scrollEl = scroll;
       this.pageFrameEl = pageFrame;
@@ -674,7 +678,7 @@ export class AnnotationView extends FileView {
       this.applyZoom();
       this.installZoomHandlers(scroll);
       this.installSelectionHandlers(selectionLayer);
-      this.saveQueue = new SaveQueue(() => this.saveNow(), 800);
+      this.saveQueue = new SaveQueue(() => this.saveNow(), 800, () => { new Notice("注釈を保存できませんでした。空き容量と保存先を確認して、もう一度保存してください。", 10000); });
 
       const useTiledInk = !isPdfSource && this.shouldUseTiledInk(pageSize);
       page.classList.toggle("mobile-ink-tiled-ink-mode", useTiledInk);
@@ -728,6 +732,11 @@ export class AnnotationView extends FileView {
         }
       }
       this.refreshToolbarState();
+    } catch (error) {
+      console.error("Lecture Ink: cannot open annotation view", error);
+      this.engine?.destroy(); this.engine=null;
+      this.contentEl.empty();
+      this.contentEl.createDiv({cls:"mobile-ink-status",text:error instanceof Error ? error.message : "ファイルを開けませんでした。"});
     } finally {
       this.rendering = false;
     }
@@ -909,7 +918,7 @@ export class AnnotationView extends FileView {
 
 
   private shouldUseTiledInk(pageSize: { width: number; height: number }): boolean {
-    return true; // 强制启用切片渲染，防止全局 Canvas 在高放大倍数和频繁重绘时爆内存
+    return true; // 强制启用切片渲染，防止全局 Canvas 在高拡大倍数和频繁重绘时爆内存
   }
 
   private createInitialInkToolState() {
@@ -929,15 +938,15 @@ export class AnnotationView extends FileView {
     this.titlebarActionsInstalled = true;
 
     // Obsidian prepends view actions, so create them in reverse visual order.
-    this.toolbarButtons.zoomIn = this.createTitlebarAction("zoom-in", "放大", () => this.zoomBy(ZOOM_STEP));
-    this.toolbarButtons.zoomReset = this.createTitlebarAction("rotate-ccw", "重置缩放", () => this.setZoom(1));
-    this.toolbarButtons.zoomOut = this.createTitlebarAction("zoom-out", "缩小", () => this.zoomBy(1 / ZOOM_STEP));
-    this.toolbarButtons.redo = this.createTitlebarAction("redo-2", "重做", () => {
+    this.toolbarButtons.zoomIn = this.createTitlebarAction("zoom-in", "拡大", () => this.zoomBy(ZOOM_STEP));
+    this.toolbarButtons.zoomReset = this.createTitlebarAction("rotate-ccw", "ズームをリセット", () => this.setZoom(1));
+    this.toolbarButtons.zoomOut = this.createTitlebarAction("zoom-out", "縮小", () => this.zoomBy(1 / ZOOM_STEP));
+    this.toolbarButtons.redo = this.createTitlebarAction("redo-2", "やり直す", () => {
       ((...args: any[]) => (null as any))();
       this.engine?.redo();
       this.refreshToolbarState();
     });
-    this.toolbarButtons.undo = this.createTitlebarAction("undo-2", "撤销", () => {
+    this.toolbarButtons.undo = this.createTitlebarAction("undo-2", "元に戻す", () => {
       ((...args: any[]) => (null as any))();
       this.engine?.undo();
       this.refreshToolbarState();
@@ -948,15 +957,64 @@ export class AnnotationView extends FileView {
     const action = this.addAction(icon, title, (event) => {
       event.preventDefault();
       this.closeToolbarPopovers();
-      void onClick(event);
+      Promise.resolve(onClick(event)).catch(error => console.error("Lecture Ink: action failed", error));
     });
     action.addClass("mobile-ink-titlebar-action");
     return action;
   }
 
+  async exportPdfCopy(): Promise<void> {
+    if (this.exportingPdf || !this.isPdfPath(this.sourcePath) || !this.engine || !this.pdfBackgroundDocument) return;
+    this.exportingPdf = true;
+    this.setMorePanelOpen(false);
+    this.refreshToolbarState();
+    const notice = new Notice("書き込み入りPDFを作成しています…", 0);
+    const sourcePath = this.sourcePath;
+    const pdf = this.pdfBackgroundDocument;
+    const engine = this.engine;
+    const entries = this.pdfBackgroundPages.map(entry => ({...entry}));
+    const targetWidth = this.pdfBackgroundTargetWidth;
+    try {
+      this.engine.flushPendingStrokes();
+      await this.saveQueue?.flush();
+      if (this.sourcePath !== sourcePath || this.engine !== engine || this.pdfBackgroundDocument !== pdf) {
+        throw new Error("保存中に表示するPDFが変わりました。元のPDFを開いて、もう一度保存してください。");
+      }
+      const strokes = structuredClone(engine.getStrokes());
+      const annotations = structuredClone(this.pdfTextAnnotations);
+      // Use the exact bytes being viewed: an external edit cannot misalign the export.
+      const source = await pdf.getData();
+      const layouts: ExportPage[] = [];
+      for (const entry of entries) {
+        const width = Math.ceil(entry.viewport.width), height = Math.ceil(entry.viewport.height);
+        const page = await pdf.getPage(entry.pageNumber);
+        const base = page.getViewport({scale:1});
+        const scale = Math.min(targetWidth / Math.max(1,base.width), height / Math.max(1,base.height));
+        const view = page.getViewport({scale});
+        if (!view.transform) throw new Error("PDFのページ座標を読み取れません。");
+        const transform = [...view.transform] as ExportPage["transform"];
+        transform[4] += Math.max(0,(width-view.width)/2);
+        transform[5] += Math.max(0,(height-view.height)/2);
+        layouts.push({pageNumber:entry.pageNumber,width,height,offsetY:entry.offsetY,transform});
+      }
+      const bytes = await exportAnnotatedPdf(source,layouts,strokes,annotations,
+        (done,total) => notice.setMessage(`PDFを作成しています… ${done}/${total}ページ`));
+      const path = await saveExportCopy(this.app.vault,sourcePath,bytes);
+      notice.setMessage(`保存しました：${path}\n元のPDFはそのまま残っています。`);
+      window.setTimeout(()=>notice.hide(),8000);
+    } catch (error) {
+      console.error("Lecture Ink: PDF export failed",error);
+      notice.hide();
+      new Notice(`PDFを保存できませんでした。${error instanceof Error ? error.message : "空き容量と保存先を確認してください。"}`,10000);
+    } finally {
+      this.exportingPdf = false;
+      this.refreshToolbarState();
+    }
+  }
+
   private async saveCurrentAnnotation(): Promise<void> {
     await this.saveQueue?.flush();
-    new Notice("手写标注已保存");
+    new Notice("注釈を保存しました。");
   }
 
   private async exitAnnotationView(): Promise<void> {
@@ -977,7 +1035,7 @@ export class AnnotationView extends FileView {
   private createToolbar(root: HTMLElement): void {
     const toolbar = root.createDiv({
       cls: "mobile-ink-toolbar",
-      attr: { "aria-label": "批注工具栏" }
+      attr: { "aria-label": "注釈ツールバー" }
     });
     this.toolbarEl = toolbar;
 
@@ -985,37 +1043,39 @@ export class AnnotationView extends FileView {
     const dragHandle = dock.createDiv({
       cls: "mobile-ink-drag-handle",
       attr: {
-        "aria-label": "拖动工具栏",
-        title: "拖动工具栏"
+        "aria-label": "ツールバーを移動",
+        title: "ツールバーを移動"
       }
     });
     this.bindToolbarDrag(dragHandle);
 
     const toolGroup = this.createToolbarGroup(dock);
-    this.toolbarButtons.pen = this.createToolButton(toolGroup, "pencil", "画笔", () => this.setTool("pen"));
-    this.toolbarButtons.highlighter = this.createToolButton(toolGroup, "highlighter", "记号笔", () => this.setTool("highlighter"));
-    this.toolbarButtons.eraser = this.createToolButton(toolGroup, "eraser", "橡皮擦", () => this.activateEraser());
+    this.toolbarButtons.pen = this.createToolButton(toolGroup, "pencil", "ペン", () => this.setTool("pen"));
+    this.toolbarButtons.highlighter = this.createToolButton(toolGroup, "highlighter", "蛍光ペン", () => this.setTool("highlighter"));
+    this.toolbarButtons.eraser = this.createToolButton(toolGroup, "eraser", "消しゴム", () => this.activateEraser());
     if (false) {
-      this.toolbarButtons.strokeSelect = this.createIconButton(toolGroup, "scan", "框选标注", () => ((...args: any[]) => (null as any))(!this.strokeSelectMode));
+      this.toolbarButtons.strokeSelect = this.createIconButton(toolGroup, "scan", "手書きを選択", () => ((...args: any[]) => (null as any))(!this.strokeSelectMode));
     }
     if (false) {
-      this.toolbarButtons.capture = this.createIconButton(toolGroup, "scan-search", "圈画截图", () => ((...args: any[]) => (null as any))(!this.captureMode));
+      this.toolbarButtons.capture = this.createIconButton(toolGroup, "scan-search", "範囲を画像にする", () => ((...args: any[]) => (null as any))(!this.captureMode));
     }
     if (this.plugin.hasFeature("pdfTextAnnotation")) {
-      this.toolbarButtons.select = this.createIconButton(toolGroup, "text-select", "选择文本", () => this.setSelectMode(!this.selectMode));
+      this.toolbarButtons.select = this.createIconButton(toolGroup, "text-select", "文字を選択", () => this.setSelectMode(!this.selectMode));
     }
-    this.toolbarButtons.width = this.createIconButton(toolGroup, "sliders-horizontal", "线条粗细", () => this.setWidthPanelOpen(!this.widthPanelOpen));
+    this.toolbarButtons.width = this.createIconButton(toolGroup, "sliders-horizontal", "線の太さ", () => this.setWidthPanelOpen(!this.widthPanelOpen));
 
     const colorGroup = this.createToolbarGroup(dock);
     this.toolbarButtons.palette = this.createCurrentColorButton(colorGroup);
 
     const actionGroup = this.createToolbarGroup(dock);
-    this.toolbarButtons.collapse = this.createIconButton(actionGroup, "chevron-down", "收起工具栏", () => this.setToolbarCollapsed(true));
+    this.toolbarButtons.more = this.createIconButton(actionGroup, "more-horizontal", "その他の操作", () => this.setMorePanelOpen(!this.morePanelOpen));
+    this.toolbarButtons.collapse = this.createIconButton(actionGroup, "chevron-down", "ツールバーを折りたたむ", () => this.setToolbarCollapsed(true));
 
     this.createColorPalette(toolbar);
     this.createWidthPanel(toolbar);
     this.createEraserPanel(toolbar);
-    this.toolbarButtons.expand = this.createIconButton(toolbar, "pencil", "展开工具栏", () => this.setToolbarCollapsed(false));
+    this.createMorePanel(toolbar);
+    this.toolbarButtons.expand = this.createIconButton(toolbar, "pencil", "ツールバーを開く", () => this.setToolbarCollapsed(false));
     this.toolbarButtons.expand.classList.add("mobile-ink-floating-button");
     this.bindToolbarDrag(this.toolbarButtons.expand);
     this.restoreToolbarPosition();
@@ -1046,7 +1106,7 @@ export class AnnotationView extends FileView {
         this.suppressToolbarClick = false;
         return;
       }
-      void onClick();
+      Promise.resolve(onClick()).catch(error => console.error("Lecture Ink: action failed", error));
     });
     return button;
   }
@@ -1062,8 +1122,8 @@ export class AnnotationView extends FileView {
       cls: "mobile-ink-current-color-button",
       attr: {
         type: "button",
-        "aria-label": "调色盘",
-        title: "调色盘",
+        "aria-label": "色を選ぶ",
+        title: "色を選ぶ",
         "aria-expanded": "false"
       }
     });
@@ -1079,17 +1139,17 @@ export class AnnotationView extends FileView {
   private createColorPalette(parent: HTMLElement): void {
     const palette = parent.createDiv({
       cls: "mobile-ink-toolbar-popover mobile-ink-color-palette",
-      attr: { "aria-label": "调色盘" }
+      attr: { "aria-label": "色を選ぶ" }
     });
     this.colorPaletteEl = palette;
 
     const swatches = palette.createDiv({ cls: "mobile-ink-color-swatches" });
-    this.createColorButton(swatches, "黑色", "#111111", () => this.setInkColor("#111111"));
-    this.createColorButton(swatches, "蓝色", "#1c7ed6", () => this.setInkColor("#1c7ed6"));
-    this.createColorButton(swatches, "绿色", "#40c057", () => this.setInkColor("#40c057"));
-    this.createColorButton(swatches, "黄色", "#fcc419", () => this.setInkColor("#fcc419"));
-    this.createColorButton(swatches, "红色", "#fa343f", () => this.setInkColor("#fa343f"));
-    this.createColorButton(swatches, "紫色", "#9c36b5", () => this.setInkColor("#9c36b5"));
+    this.createColorButton(swatches, "黒", "#111111", () => this.setInkColor("#111111"));
+    this.createColorButton(swatches, "青", "#1c7ed6", () => this.setInkColor("#1c7ed6"));
+    this.createColorButton(swatches, "緑", "#40c057", () => this.setInkColor("#40c057"));
+    this.createColorButton(swatches, "黄", "#fcc419", () => this.setInkColor("#fcc419"));
+    this.createColorButton(swatches, "赤", "#fa343f", () => this.setInkColor("#fa343f"));
+    this.createColorButton(swatches, "紫", "#9c36b5", () => this.setInkColor("#9c36b5"));
 
     const custom = palette.createDiv({ cls: "mobile-ink-custom-color" });
     const input = custom.createEl("input", {
@@ -1097,8 +1157,8 @@ export class AnnotationView extends FileView {
       attr: {
         type: "color",
         value: "#111111",
-        "aria-label": "自定义颜色",
-        title: "自定义颜色"
+        "aria-label": "好きな色を選ぶ",
+        title: "好きな色を選ぶ"
       }
     });
     input.addEventListener("input", () => {
@@ -1110,7 +1170,7 @@ export class AnnotationView extends FileView {
   private createWidthPanel(parent: HTMLElement): void {
     const panel = parent.createDiv({
       cls: "mobile-ink-toolbar-popover mobile-ink-width-panel",
-      attr: { "aria-label": "线条粗细" }
+      attr: { "aria-label": "線の太さ" }
     });
     this.widthPanelEl = panel;
 
@@ -1126,7 +1186,7 @@ export class AnnotationView extends FileView {
         max: "36",
         step: "0.5",
         value: "2",
-        "aria-label": "线条粗细"
+        "aria-label": "線の太さ"
       }
     });
     const number = controls.createEl("input", {
@@ -1137,7 +1197,7 @@ export class AnnotationView extends FileView {
         max: "36",
         step: "0.5",
         value: "2",
-        "aria-label": "线条粗细数值"
+        "aria-label": "線の太さの値"
       }
     });
 
@@ -1150,16 +1210,16 @@ export class AnnotationView extends FileView {
   private createEraserPanel(parent: HTMLElement): void {
     const panel = parent.createDiv({
       cls: "mobile-ink-toolbar-popover mobile-ink-eraser-panel",
-      attr: { "aria-label": "橡皮擦选项" }
+      attr: { "aria-label": "消しゴムの設定" }
     });
     this.eraserPanelEl = panel;
 
-    this.createEraserOption(panel, "eraser", "橡皮擦", () => {
+    this.createEraserOption(panel, "eraser", "消しゴム", () => {
       this.setTool("eraser", { allowToggleBrowse: false });
       this.setEraserPanelOpen(false);
     });
     if (this.plugin.hasFeature("clearAllAnnotations")) {
-      this.toolbarButtons.clearAll = this.createEraserOption(panel, "trash-2", "清除全部标注", async () => {
+      this.toolbarButtons.clearAll = this.createEraserOption(panel, "trash-2", "注釈をすべて削除", async () => {
         await this.confirmAndClearAll();
       });
       this.toolbarButtons.clearAll.classList.add("mobile-ink-danger-option");
@@ -1169,43 +1229,43 @@ export class AnnotationView extends FileView {
   private createMorePanel(parent: HTMLElement): void {
     const panel = parent.createDiv({
       cls: "mobile-ink-toolbar-popover mobile-ink-more-panel",
-      attr: { "aria-label": "更多操作" }
+      attr: { "aria-label": "その他の操作" }
     });
     this.morePanelEl = panel;
 
-    this.toolbarButtons.zoomOut = this.createMoreOption(panel, "zoom-out", "缩小", () => this.zoomBy(1 / ZOOM_STEP));
-    this.toolbarButtons.zoomReset = this.createMoreOption(panel, "rotate-ccw", "重置缩放", () => this.setZoom(1));
-    this.toolbarButtons.zoomIn = this.createMoreOption(panel, "zoom-in", "放大", () => this.zoomBy(ZOOM_STEP));
+    this.toolbarButtons.zoomOut = this.createMoreOption(panel, "zoom-out", "縮小", () => this.zoomBy(1 / ZOOM_STEP));
+    this.toolbarButtons.zoomReset = this.createMoreOption(panel, "rotate-ccw", "ズームをリセット", () => this.setZoom(1));
+    this.toolbarButtons.zoomIn = this.createMoreOption(panel, "zoom-in", "拡大", () => this.zoomBy(ZOOM_STEP));
     if (false) {
-      this.toolbarButtons.touch = this.createMoreOption(panel, "hand", "手指书写", () => ((...args: any[]) => (null as any))());
+      this.toolbarButtons.touch = this.createMoreOption(panel, "hand", "指で手書き", () => ((...args: any[]) => (null as any))());
     }
     
     // 独立笔记模板切换按钮
     if (this.standalone) {
-      this.toolbarButtons.insertImage = this.createMoreOption(panel, "image-plus", "添加图片", () => {
+      this.toolbarButtons.insertImage = this.createMoreOption(panel, "image-plus", "画像を追加", () => {
         ((...args: any[]) => (null as any))();
       });
-      this.toolbarButtons.insertShape = this.createMoreOption(panel, "shapes", "添加形状", (event) => {
+      this.toolbarButtons.insertShape = this.createMoreOption(panel, "shapes", "図形を追加", (event) => {
         ((...args: any[]) => (null as any))(event);
       });
-      this.toolbarButtons.insertSticker = this.createMoreOption(panel, "sticker", "添加贴纸", (event) => {
+      this.toolbarButtons.insertSticker = this.createMoreOption(panel, "sticker", "ステッカーを追加", (event) => {
         this.toggleStickerPanel(event);
       });
     }
 
-    this.toolbarButtons.template = this.createMoreOption(panel, "layout-template", "切换模板", (e) => {
+    if (this.standalone) this.toolbarButtons.template = this.createMoreOption(panel, "layout-template", "用紙を変更", (e) => {
       if (!this.standalone || !this.annotation) {
-        new Notice("仅独立手写笔记支持切换模板");
+        new Notice("用紙を変更できるのは手書きノートのみです。");
         return;
       }
       
       const menu = new Menu();
       const templates: { id: StandaloneTemplate; name: string }[] = [
-        { id: "blank", name: "空白页" },
-        { id: "lined", name: "横线纸" },
-        { id: "grid", name: "方格纸" },
-        { id: "dotted", name: "点阵纸" },
-        { id: "cornell", name: "康奈尔笔记" }
+        { id: "blank", name: "白紙" },
+        { id: "lined", name: "罫線" },
+        { id: "grid", name: "方眼" },
+        { id: "dotted", name: "ドット" },
+        { id: "cornell", name: "コーネル式ノート" }
       ];
       
       const current = this.annotation.template || "blank";
@@ -1228,17 +1288,17 @@ export class AnnotationView extends FileView {
       
       menu.showAtMouseEvent(e as MouseEvent);
     });
-    if (false) {
-      this.toolbarButtons.exportPdf = this.createMoreOption(panel, "file-down", "导出 PDF", async () => {
-        await ((...args: any[]) => (null as any))();
+    if (this.isPdfPath(this.sourcePath)) {
+      this.toolbarButtons.exportPdf = this.createMoreOption(panel, "file-down", "書き込み入りPDFを保存", async () => {
+        await this.exportPdfCopy();
       });
     }
     this.toolbarButtons.save = this.createMoreOption(panel, "save", "保存", async () => {
       await this.saveQueue?.flush();
-      new Notice("手写标注已保存");
+      new Notice("注釈を保存しました。");
       this.setMorePanelOpen(false);
     });
-    this.toolbarButtons.exit = this.createMoreOption(panel, "x", "退出", async () => {
+    this.toolbarButtons.exit = this.createMoreOption(panel, "x", "閉じる", async () => {
       await this.saveQueue?.flush();
       this.app.workspace.detachLeavesOfType(VIEW_TYPE_MOBILE_INK);
     });
@@ -1258,7 +1318,7 @@ export class AnnotationView extends FileView {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      void onClick(event);
+      Promise.resolve(onClick(event)).catch(error => console.error("Lecture Ink: action failed", error));
     });
     return button;
   }
@@ -1277,33 +1337,33 @@ export class AnnotationView extends FileView {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      void onClick();
+      Promise.resolve(onClick()).catch(error => console.error("Lecture Ink: action failed", error));
     });
     return button;
   }
 
   private createSelectionMenu(menu: HTMLElement): void {
-    menu.setAttribute("aria-label", "选区操作");
-    this.createSelectionMenuButton(menu, "copy", "复制", () => {
+    menu.setAttribute("aria-label", "選択範囲の操作");
+    this.createSelectionMenuButton(menu, "copy", "コピー", () => {
       ((...args: any[]) => (null as any))();
       ((...args: any[]) => (null as any))();
     });
-    this.createSelectionMenuButton(menu, "clipboard-paste", "粘贴", () => {
+    this.createSelectionMenuButton(menu, "clipboard-paste", "貼り付け", () => {
       ((...args: any[]) => (null as any))();
       ((...args: any[]) => (null as any))();
     }, () => this.strokeClipboard.length === 0);
-    this.createSelectionMenuButton(menu, "trash-2", "删除", () => {
+    this.createSelectionMenuButton(menu, "trash-2", "削除", () => {
       ((...args: any[]) => (null as any))();
       ((...args: any[]) => (null as any))();
     }, () => this.selectedStrokeIds.size === 0, true);
   }
 
   private createCaptureMenu(menu: HTMLElement): void {
-    menu.setAttribute("aria-label", "截图操作");
-    this.createSelectionMenuButton(menu, "copy", "复制图片", () => {
+    menu.setAttribute("aria-label", "画像の操作");
+    this.createSelectionMenuButton(menu, "copy", "画像をコピー", () => {
       void ((...args: any[]) => (null as any))();
     }, () => !this.captureRect);
-    this.createSelectionMenuButton(menu, "image-down", "另存图片", () => {
+    this.createSelectionMenuButton(menu, "image-down", "画像を別名で保存", () => {
       void ((...args: any[]) => (null as any))();
     }, () => !this.captureRect);
   }
@@ -1388,7 +1448,7 @@ export class AnnotationView extends FileView {
 
     const customButton = row.createEl("label", {
       cls: "mobile-ink-pdf-color-choice mobile-ink-pdf-color-custom",
-      attr: { title: "自定义颜色" }
+      attr: { title: "好きな色を選ぶ" }
     });
     const input = customButton.createEl("input", {
       attr: {
@@ -2298,7 +2358,7 @@ export class AnnotationView extends FileView {
     if (key === "s") {
       event.preventDefault();
       event.stopPropagation();
-      void this.saveCurrentAnnotation();
+      void this.saveCurrentAnnotation().catch(error => console.error("Lecture Ink: save failed", error));
       return;
     }
 
@@ -2394,6 +2454,7 @@ export class AnnotationView extends FileView {
     const defaultPageSize = this.getDefaultMarkdownPageSize(scroll);
     const loadedAnnotation = await this.plugin.store.load(file.path, defaultPageSize.width, defaultPageSize.height);
     this.savedMarkdownLayout = loadedAnnotation.markdownLayout ?? null;
+    assertDimensions(loadedAnnotation.pageWidth, loadedAnnotation.pageHeight);
     const hasSavedStrokes = loadedAnnotation.strokes.length > 0;
     const savedWidth = Number.isFinite(loadedAnnotation.pageWidth) && loadedAnnotation.pageWidth > 0
       ? Math.ceil(loadedAnnotation.pageWidth)
@@ -2415,6 +2476,7 @@ export class AnnotationView extends FileView {
       ? this.savedMarkdownLayout
       : null;
     const pageSize = await this.measureAndFreezePage(scroll, page, background, preferredWidth, preferredHeight);
+    assertDimensions(pageSize.width, pageSize.height);
     this.currentMarkdownLayout = this.collectMarkdownLayoutSnapshot() ?? null;
     this.annotation = loadedAnnotation;
     this.pdfTextAnnotations = this.prepareMarkdownTextAnnotationsForCurrentLayout(
@@ -2491,10 +2553,10 @@ export class AnnotationView extends FileView {
 
     const btn = pageFrame.createEl("button", {
       cls: "mobile-ink-add-page-btn",
-      attr: { type: "button", title: "添加新页面", "aria-label": "添加新页面" }
+      attr: { type: "button", title: "新しいページを追加", "aria-label": "新しいページを追加" }
     });
     btn.style.top = `${btnTop + 8}px`;
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>添加页面</span>`;
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>ページを追加</span>`;
     btn.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -2557,7 +2619,7 @@ export class AnnotationView extends FileView {
           row.createDiv({ cls: "mobile-ink-label-line" });
         }
       } else if (element.sticker === "label-heart") {
-        body.createDiv({ cls: "mobile-ink-label-text", text: "今日计划" });
+        body.createDiv({ cls: "mobile-ink-label-text", text: "今日の予定" });
         body.createDiv({ cls: "mobile-ink-label-icon", text: "💖" });
       }
       return;
@@ -2612,7 +2674,7 @@ export class AnnotationView extends FileView {
 
   private toggleStickerPanel(event?: MouseEvent | TouchEvent): void {
     if (!this.standalone || !this.annotation) {
-      new Notice("仅独立手写笔记支持添加贴纸");
+      new Notice("ステッカーを追加できるのは手書きノートのみです。");
       return;
     }
     this.setMorePanelOpen(false);
@@ -2651,8 +2713,8 @@ export class AnnotationView extends FileView {
 
     // Close button
     const header = panel.createDiv({ cls: "mobile-ink-sticker-panel-header" });
-    header.createSpan({ cls: "mobile-ink-sticker-panel-title", text: "贴纸" });
-    const closeBtn = header.createEl("button", { cls: "mobile-ink-sticker-panel-close", attr: { type: "button", "aria-label": "关闭" } });
+    header.createSpan({ cls: "mobile-ink-sticker-panel-title", text: "ステッカー" });
+    const closeBtn = header.createEl("button", { cls: "mobile-ink-sticker-panel-close", attr: { type: "button", "aria-label": "閉じる" } });
     setIcon(closeBtn, "x");
     closeBtn.addEventListener("click", () => this.setStickerPanelOpen(false));
 
@@ -2684,7 +2746,7 @@ export class AnnotationView extends FileView {
     void this.getStandaloneCustomStickerAssets().then((customAssets) => {
       if (!this.stickerPanelEl || !this.stickerPanelEl.isConnected) return;
       if (customAssets.length === 0) return;
-      scroll.createDiv({ cls: "mobile-ink-sticker-group-title", text: "自定义" });
+      scroll.createDiv({ cls: "mobile-ink-sticker-group-title", text: "カスタム" });
       const grid = scroll.createDiv({ cls: "mobile-ink-sticker-grid" });
       for (const asset of customAssets) {
         const file = this.app.vault.getAbstractFileByPath(asset.path);
@@ -2752,44 +2814,44 @@ export class AnnotationView extends FileView {
   private getStandaloneStickerGroupedOptions(): Array<{ title: string; items: Array<{ kind: StandaloneStickerKind; label: string; icon: string }> }> {
     return [
       {
-        title: "🎯 胶带与标签",
+        title: "🎯 テープとラベル",
         items: [
-          { kind: "tape-blue", label: "蓝色胶带", icon: "minus" },
-          { kind: "tape-green", label: "绿色胶带", icon: "minus" },
-          { kind: "tape-yellow", label: "黄色胶带", icon: "minus" },
-          { kind: "tape-pink", label: "粉色胶带", icon: "minus" },
-          { kind: "tape-grid", label: "网格胶带", icon: "grid-3x3" },
-          { kind: "tape-floral", label: "花朵胶带", icon: "flower" },
-          { kind: "sticky-note", label: "便签贴", icon: "sticky-note" },
+          { kind: "tape-blue", label: "青いテープ", icon: "minus" },
+          { kind: "tape-green", label: "緑のテープ", icon: "minus" },
+          { kind: "tape-yellow", label: "黄いテープ", icon: "minus" },
+          { kind: "tape-pink", label: "ピンクのテープ", icon: "minus" },
+          { kind: "tape-grid", label: "方眼のテープ", icon: "grid-3x3" },
+          { kind: "tape-floral", label: "花柄のテープ", icon: "flower" },
+          { kind: "sticky-note", label: "付箋", icon: "sticky-note" },
           { kind: "label-memo", label: "MEMO", icon: "tag" },
-          { kind: "label-todo", label: "待办", icon: "list-todo" },
-          { kind: "label-heart", label: "爱心标签", icon: "heart-handshake" },
+          { kind: "label-todo", label: "やること", icon: "list-todo" },
+          { kind: "label-heart", label: "ハートのラベル", icon: "heart-handshake" },
         ]
       },
       {
-        title: "☀️ 天气与心情",
+        title: "☀️ 天気と気分",
         items: [
-          { kind: "emoji-sun", label: "晴天", icon: "sun" },
-          { kind: "emoji-cloud", label: "多云", icon: "cloud" },
-          { kind: "emoji-rain", label: "下雨", icon: "cloud-rain" },
-          { kind: "emoji-rainbow", label: "彩虹", icon: "rainbow" },
-          { kind: "emoji-smile", label: "微笑", icon: "smile" },
-          { kind: "emoji-laugh", label: "开心", icon: "laugh" },
-          { kind: "emoji-heart-eyes", label: "喜欢", icon: "heart" },
-          { kind: "emoji-thinking", label: "思考", icon: "brain" },
-          { kind: "emoji-sad", label: "难过", icon: "frown" },
-          { kind: "emoji-party", label: "庆祝", icon: "party-popper" }
+          { kind: "emoji-sun", label: "晴れ", icon: "sun" },
+          { kind: "emoji-cloud", label: "曇り", icon: "cloud" },
+          { kind: "emoji-rain", label: "雨", icon: "cloud-rain" },
+          { kind: "emoji-rainbow", label: "虹", icon: "rainbow" },
+          { kind: "emoji-smile", label: "笑顔", icon: "smile" },
+          { kind: "emoji-laugh", label: "楽しい", icon: "laugh" },
+          { kind: "emoji-heart-eyes", label: "好き", icon: "heart" },
+          { kind: "emoji-thinking", label: "考え中", icon: "brain" },
+          { kind: "emoji-sad", label: "悲しい", icon: "frown" },
+          { kind: "emoji-party", label: "お祝い", icon: "party-popper" }
         ]
       },
       {
-        title: "✨ 装饰与图标",
+        title: "✨ 飾りとアイコン",
         items: [
-          { kind: "flower", label: "花朵", icon: "flower-2" },
-          { kind: "paperclip", label: "纸夹", icon: "paperclip" },
-          { kind: "emoji-sparkles", label: "闪亮", icon: "sparkles" },
-          { kind: "emoji-star", label: "星星", icon: "star" },
-          { kind: "icon-heart", label: "粉色爱心", icon: "heart" },
-          { kind: "icon-star", label: "黄色星星", icon: "star" }
+          { kind: "flower", label: "花", icon: "flower-2" },
+          { kind: "paperclip", label: "クリップ", icon: "paperclip" },
+          { kind: "emoji-sparkles", label: "きらきら", icon: "sparkles" },
+          { kind: "emoji-star", label: "星", icon: "star" },
+          { kind: "icon-heart", label: "ピンクのハート", icon: "heart" },
+          { kind: "icon-star", label: "黄の星", icon: "star" }
         ]
       }
     ];
@@ -2820,7 +2882,7 @@ export class AnnotationView extends FileView {
         label: typeof record.label === "string" && record.label.trim() ? record.label.trim() : file.basename,
         path: file.path,
         file,
-        category: typeof record.category === "string" && record.category.trim() ? record.category.trim() : "自定义",
+        category: typeof record.category === "string" && record.category.trim() ? record.category.trim() : "カスタム",
         width: this.readPositiveManifestNumber(record.width),
         height: this.readPositiveManifestNumber(record.height),
         rotation: this.readManifestNumber(record.rotation)
@@ -2837,7 +2899,7 @@ export class AnnotationView extends FileView {
         label: file.basename,
         path: file.path,
         file,
-        category: "自定义"
+        category: "カスタム"
       });
     }
 
@@ -2853,8 +2915,8 @@ export class AnnotationView extends FileView {
         const parsed = JSON.parse(await this.app.vault.adapter.read(path)) as { items?: unknown };
         return Array.isArray(parsed.items) ? parsed.items : [];
       } catch (error) {
-        console.warn("Mobile Ink Annotation: failed to read custom sticker manifest", error);
-        new Notice(`自定义贴纸配置读取失败：${path}`);
+        console.warn("Mobile 講義スライドの手書き: failed to read custom sticker manifest", error);
+        new Notice(`ステッカーの設定を読み込めません：${path}`);
         return [];
       }
     }
@@ -3047,10 +3109,10 @@ export class AnnotationView extends FileView {
     ((...args: any[]) => (null as any))();
 
     const menu = new Menu();
-    menu.addItem((item) => item.setTitle("置于顶层").setIcon("bring-to-front").onClick(() => this.moveStandaloneElementLayer(id, "front")));
-    menu.addItem((item) => item.setTitle("上移一层").setIcon("move-up").onClick(() => this.moveStandaloneElementLayer(id, "forward")));
-    menu.addItem((item) => item.setTitle("下移一层").setIcon("move-down").onClick(() => this.moveStandaloneElementLayer(id, "backward")));
-    menu.addItem((item) => item.setTitle("置于底层").setIcon("send-to-back").onClick(() => this.moveStandaloneElementLayer(id, "back")));
+    menu.addItem((item) => item.setTitle("最前面に移動").setIcon("bring-to-front").onClick(() => this.moveStandaloneElementLayer(id, "front")));
+    menu.addItem((item) => item.setTitle("一つ前に移動").setIcon("move-up").onClick(() => this.moveStandaloneElementLayer(id, "forward")));
+    menu.addItem((item) => item.setTitle("一つ後ろに移動").setIcon("move-down").onClick(() => this.moveStandaloneElementLayer(id, "backward")));
+    menu.addItem((item) => item.setTitle("最背面に移動").setIcon("send-to-back").onClick(() => this.moveStandaloneElementLayer(id, "back")));
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("透明度 100%").setIcon("circle").setChecked(((...args: any[]) => (null as any))(element) >= 0.99).onClick(() => this.setStandaloneElementOpacityById(id, 1)));
     menu.addItem((item) => item.setTitle("透明度 80%").setIcon("circle").setChecked(Math.abs(((...args: any[]) => (null as any))(element) - 0.8) < 0.01).onClick(() => this.setStandaloneElementOpacityById(id, 0.8)));
@@ -3059,7 +3121,7 @@ export class AnnotationView extends FileView {
     menu.addSeparator();
     menu.addItem((item) => {
       item
-        .setTitle("删除")
+        .setTitle("削除")
         .setIcon("trash-2")
         .onClick(() => this.deleteStandaloneElement(id));
     });
@@ -3316,7 +3378,9 @@ export class AnnotationView extends FileView {
 
     const pdfjsLib = await loadPdfJs() as PdfJsLib;
     const data = new Uint8Array(await this.app.vault.readBinary(file));
+    if (data.byteLength > 100 * 1024 * 1024) throw new Error("100MBを超えるPDFは、この版では開けません。");
     const pdf = await pdfjsLib.getDocument(this.createPdfJsDocumentSource(data)).promise;
+    if (pdf.numPages > MAX_PDF_PAGES) { await pdf.destroy?.(); throw new Error("1000ページを超えるPDFは分割して開いてください。"); }
     const availableWidth = Math.max(320, scroll.clientWidth - 24);
     const maxWidth = this.isMobileLike() ? PDF_BACKGROUND_MOBILE_MAX_WIDTH : PDF_BACKGROUND_DESKTOP_MAX_WIDTH;
     const targetWidth = Math.min(Math.max(availableWidth, 320), maxWidth);
@@ -3326,6 +3390,8 @@ export class AnnotationView extends FileView {
     const estimatedViewport = firstPage.getViewport({ scale: firstScale });
     const estimatedPageWidth = Math.max(1, Math.ceil(estimatedViewport.width));
     const estimatedPageHeight = Math.max(1, Math.ceil(estimatedViewport.height));
+    try { assertDimensions(estimatedPageWidth,estimatedPageHeight,MAX_PDF_PAGE_HEIGHT); }
+    catch (error) { await pdf.destroy?.(); throw error; }
     let totalHeight = 0;
     this.pdfBackgroundDocument = pdf;
     this.pdfBackgroundTargetWidth = targetWidth;
@@ -3344,7 +3410,7 @@ export class AnnotationView extends FileView {
 
       const canvas = pageEl.createEl("canvas", {
         cls: "mobile-ink-pdf-page-canvas",
-        attr: { "aria-label": `PDF page ${pageNumber}` }
+        attr: { "aria-label": `PDFの${pageNumber}ページ` }
       });
       canvas.style.width = `${estimatedPageWidth}px`;
       canvas.style.height = `${estimatedPageHeight}px`;
@@ -3354,7 +3420,7 @@ export class AnnotationView extends FileView {
       });
       const textLayer = pageEl.createDiv({
         cls: "mobile-ink-pdf-text-layer",
-        attr: { "aria-label": `PDF page ${pageNumber} text` }
+        attr: { "aria-label": `PDFの${pageNumber}ページの文字` }
       });
       this.pdfBackgroundPages.push({
         pageNumber,
@@ -3390,38 +3456,8 @@ export class AnnotationView extends FileView {
   }
 
   private createPdfJsDocumentSource(data: Uint8Array): PdfJsDocumentSource {
-    const source: PdfJsDocumentSource = { data };
-    const cMapUrl = this.getPdfJsAssetDirectoryUrl("cmaps", "Adobe-CNS1-UCS2.bcmap");
-    const standardFontDataUrl = this.getPdfJsAssetDirectoryUrl("standard_fonts", "FoxitSerif.pfb");
-
-    if (cMapUrl) {
-      source.cMapUrl = cMapUrl;
-      source.cMapPacked = true;
-    }
-
-    if (standardFontDataUrl) {
-      source.standardFontDataUrl = standardFontDataUrl;
-    }
-
-    if (cMapUrl || standardFontDataUrl) {
-      source.useWorkerFetch = false;
-    }
-
-    return source;
-  }
-
-  private getPdfJsAssetDirectoryUrl(folder: "cmaps" | "standard_fonts", sampleFile: string): string | undefined {
-    const pluginDir = this.plugin.manifest.dir;
-    if (!pluginDir) return undefined;
-
-    const samplePath = normalizePath(`${pluginDir}/pdfjs/${folder}/${sampleFile}`);
-    const sampleUrl = this.app.vault.adapter.getResourcePath(samplePath);
-    const sampleIndex = sampleUrl.lastIndexOf(sampleFile);
-    if (sampleIndex === -1) {
-      return sampleUrl.endsWith("/") ? sampleUrl : `${sampleUrl}/`;
-    }
-
-    return sampleUrl.slice(0, sampleIndex);
+    return {data, isEvalSupported:false, useWorkerFetch:false,
+      CMapReaderFactory:BundledCMapReaderFactory, StandardFontDataFactory:BundledStandardFontDataFactory};
   }
 
   private attachPdfLazyRenderer(scroll: HTMLElement): void {
@@ -3465,7 +3501,7 @@ export class AnnotationView extends FileView {
 
     if (documentToDestroy?.destroy) {
       void Promise.resolve(documentToDestroy.destroy()).catch((error) => {
-        console.warn("Mobile Ink Annotation: failed to destroy PDF document", error);
+        console.warn("Mobile 講義スライドの手書き: failed to destroy PDF document", error);
       });
     }
   }
@@ -3767,10 +3803,10 @@ export class AnnotationView extends FileView {
 
     try {
       void Promise.resolve(pdf.cleanup(true)).catch((error) => {
-        console.warn("Mobile Ink Annotation: failed to cleanup PDF document caches", error);
+        console.warn("Mobile 講義スライドの手書き: failed to cleanup PDF document caches", error);
       });
     } catch (error) {
-      console.warn("Mobile Ink Annotation: failed to cleanup PDF document caches", error);
+      console.warn("Mobile 講義スライドの手書き: failed to cleanup PDF document caches", error);
     }
   }
 
@@ -3904,7 +3940,7 @@ export class AnnotationView extends FileView {
       this.renderPdfTextAnnotationsForPage(entry);
     } catch (error) {
       if (!this.isPdfRenderCancelled(error)) {
-        console.error(`Mobile Ink Annotation: failed to render PDF page ${entry.pageNumber}`, error);
+        console.error(`Mobile 講義スライドの手書き: failed to render PDF page ${entry.pageNumber}`, error);
         entry.pageEl.addClass("mobile-ink-pdf-page-error");
       }
     } finally {
@@ -4543,9 +4579,9 @@ export class AnnotationView extends FileView {
 
     try {
       await navigator.clipboard.writeText(text);
-      new Notice("已复制 PDF 文本");
+      new Notice("PDFの文字をコピーしました。");
     } catch {
-      new Notice("复制失败，请使用系统复制菜单");
+      new Notice("コピーできませんでした。端末のコピーメニューを使ってください。");
     } finally {
       this.hidePdfTextMenu();
     }
@@ -4587,8 +4623,7 @@ export class AnnotationView extends FileView {
       : quality === "sharp" ? 8_000_000 : 3_000_000;
     const baseScale = Math.min(Math.max(window.devicePixelRatio || 1, 1), dprCap);
     const maxByPixels = Math.sqrt(pixelCap / Math.max(1, width * height));
-    const minScale = quality === "sharp" ? 1 : 0.7;
-    return Math.max(minScale, Math.min(baseScale, maxByPixels));
+    return Math.min(baseScale, maxByPixels);
   }
 
   private isMobileLike(): boolean {
@@ -4960,6 +4995,8 @@ export class AnnotationView extends FileView {
     this.setButtonActive(this.toolbarButtons.palette, this.paletteOpen);
     this.setButtonActive(this.toolbarButtons.width, this.widthPanelOpen);
     this.setButtonActive(this.toolbarButtons.more, this.morePanelOpen);
+    this.toolbarButtons.exportPdf?.toggleAttribute("disabled", this.exportingPdf);
+    this.toolbarButtons.exportPdf?.setAttribute("aria-busy", String(this.exportingPdf));
     this.toolbarButtons.more?.setAttribute("aria-expanded", this.morePanelOpen ? "true" : "false");
     this.updatePopoverPlacement();
     this.refreshToolbarState();
@@ -5053,7 +5090,7 @@ export class AnnotationView extends FileView {
     this.setButtonActive(this.toolbarButtons.touch, state.acceptTouchInput);
     ((...args: any[]) => (null as any))();
 
-    const touchLabel = state.acceptTouchInput ? "关闭手指书写" : "开启手指书写";
+    const touchLabel = state.acceptTouchInput ? "指での手書きをオフ" : "指での手書きをオン";
     this.toolbarButtons.touch?.setAttribute("aria-label", touchLabel);
     this.toolbarButtons.touch?.setAttribute("title", touchLabel);
 
@@ -5090,6 +5127,8 @@ export class AnnotationView extends FileView {
     this.setButtonActive(this.toolbarButtons.palette, this.paletteOpen);
     this.setButtonActive(this.toolbarButtons.width, this.widthPanelOpen);
     this.setButtonActive(this.toolbarButtons.more, this.morePanelOpen);
+    this.toolbarButtons.exportPdf?.toggleAttribute("disabled", this.exportingPdf);
+    this.toolbarButtons.exportPdf?.setAttribute("aria-busy", String(this.exportingPdf));
     this.toolbarButtons.more?.setAttribute("aria-expanded", this.morePanelOpen ? "true" : "false");
     this.toolbarButtons.zoomOut?.toggleAttribute("disabled", this.zoom <= MIN_ZOOM + 0.001);
     this.toolbarButtons.zoomIn?.toggleAttribute("disabled", this.zoom >= MAX_ZOOM - 0.001);
@@ -5099,11 +5138,11 @@ export class AnnotationView extends FileView {
 
   private async confirmAndClearAll(): Promise<void> {
     if (!this.plugin.hasFeature("clearAllAnnotations")) {
-      new Notice("当前版本不支持清除全部标注");
+      new Notice("この版では注釈の一括削除を利用できません。");
       return;
     }
 
-    const confirmed = window.confirm("确定清除当前笔记的所有手写标注吗？此操作不可撤销。");
+    const confirmed = window.confirm("このファイルの手書きと注釈をすべて削除しますか？この操作は元に戻せません。");
     if (!confirmed) return;
 
     this.setEraserPanelOpen(false);
@@ -5113,7 +5152,7 @@ export class AnnotationView extends FileView {
     this.renderPdfTextAnnotations();
     this.engine?.clear();
     await this.saveQueue?.flush();
-    new Notice("已清除当前笔记的所有手写标注");
+    new Notice("手書きと注釈をすべて削除しました。");
   }
 
   private getActiveColor(state = this.engine?.getToolState()): string {
@@ -5411,7 +5450,7 @@ export class AnnotationView extends FileView {
         return pdf;
       } catch (error) {
         lastError = error;
-        console.warn(`Mobile Ink Annotation: selectable PDF attempt failed (${attempt.label})`, error);
+        console.warn(`Mobile 講義スライドの手書き: selectable PDF attempt failed (${attempt.label})`, error);
       }
     }
 
@@ -5447,11 +5486,11 @@ export class AnnotationView extends FileView {
       try {
         jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, true, "svg");
       } catch (error) {
-        console.warn("Mobile Ink Annotation: selectable PDF visible layer was unsafe; retrying without embedded images", error);
+        console.warn("Mobile 講義スライドの手書き: selectable PDF visible layer was unsafe; retrying without embedded images", error);
         try {
           jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, false, "svg");
         } catch (formulaOrImageError) {
-          console.warn("Mobile Ink Annotation: selectable PDF formula rendering failed; retrying with formula text fallback", formulaOrImageError);
+          console.warn("Mobile 講義スライドの手書き: selectable PDF formula rendering failed; retrying with formula text fallback", formulaOrImageError);
           jpeg = await ((...args: any[]) => (null as any))(layout, strokes, sliceTop, sliceHeight, false, "text");
         }
       }
@@ -5869,7 +5908,7 @@ ${pages}
       ranges.push({ top: Math.max(0, top), bottom: Math.max(0, bottom) });
     }
 
-    // 对较短的手写笔画也做分页避让，避免刚好把一行批注切成上下两半。
+    // 对较短的手写笔画也做分页避让，避免刚好把一行注釈切成上下两半。
     for (const stroke of this.engine?.getStrokes() ?? []) {
       const bounds = this.getStrokeBounds(stroke);
       if (!bounds || bounds.height <= 0 || bounds.height > 180) continue;
@@ -6096,7 +6135,7 @@ ${pages}
         context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
         return true;
       } catch (dataUrlError) {
-        console.warn("Mobile Ink Annotation: failed to draw Markdown formula SVG into PDF canvas", blobError, dataUrlError);
+        console.warn("Mobile 講義スライドの手書き: failed to draw Markdown formula SVG into PDF canvas", blobError, dataUrlError);
         return false;
       }
     }
@@ -6129,7 +6168,7 @@ ${pages}
       context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
       return true;
     } catch (error) {
-      console.warn("Mobile Ink Annotation: failed to snapshot Markdown formula into PDF canvas", error);
+      console.warn("Mobile 講義スライドの手書き: failed to snapshot Markdown formula into PDF canvas", error);
       return false;
     }
   }
@@ -6889,11 +6928,11 @@ svg { overflow: visible !important; }
     }
   }
 
-  // ===== PDF 文本选择与批注（移植自完整版 V1.3） =====
+  // ===== PDF 文本选择与注釈（移植自完整版 V1.3） =====
 
   private addPdfTextAnnotation(kind: PdfTextAnnotationKind, colorOverride?: string): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) {
-      new Notice("当前版本不支持 PDF 文本批注");
+      new Notice("この版ではPDFの文字注釈を利用できません。");
       return;
     }
 
@@ -6910,7 +6949,7 @@ svg { overflow: visible !important; }
 
     if (kind === "note") {
       const frozenSelection = this.clonePdfTextSelection(selection);
-      new PdfTextNoteModal(this.app, frozenSelection.visualOnly ? "PDF 区域" : frozenSelection.text, (note) => {
+      new PdfTextNoteModal(this.app, frozenSelection.visualOnly ? "PDFの範囲" : frozenSelection.text, (note) => {
         this.commitPdfTextAnnotation("note", frozenSelection, note, color);
       }, "").open();
       return;
@@ -7050,24 +7089,24 @@ svg { overflow: visible !important; }
   private createPdfTextMenu(menu: HTMLElement): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) return;
 
-    menu.setAttribute("aria-label", "PDF 文本批注");
+    menu.setAttribute("aria-label", "PDFの文字注釈");
     const actions = menu.createDiv({ cls: "mobile-ink-pdf-menu-actions" });
-    this.createPdfMenuButton(actions, "copy", "复制", () => {
+    this.createPdfMenuButton(actions, "copy", "コピー", () => {
       void this.copyPdfSelectedText();
     }, { disabled: () => !this.pdfTextSelection?.text || this.pdfTextSelection?.visualOnly === true, showText: false });
-    const highlightButton = this.createPdfMenuButton(actions, "highlighter", "高亮", (event) => {
+    const highlightButton = this.createPdfMenuButton(actions, "highlighter", "ハイライト", (event) => {
       this.handlePdfTextAnnotationButton("highlight", event);
     }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.highlight, chevron: true, showText: false });
     highlightButton.dataset.pdfAnnotationKind = "highlight";
-    const underlineButton = this.createPdfMenuButton(actions, "underline", "下划线", (event) => {
+    const underlineButton = this.createPdfMenuButton(actions, "underline", "下線", (event) => {
       this.handlePdfTextAnnotationButton("underline", event);
     }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.underline, chevron: true, showText: false });
     underlineButton.dataset.pdfAnnotationKind = "underline";
-    const strikethroughButton = this.createPdfMenuButton(actions, "strikethrough", "删除线", (event) => {
+    const strikethroughButton = this.createPdfMenuButton(actions, "strikethrough", "取り消し線", (event) => {
       this.handlePdfTextAnnotationButton("strikethrough", event);
     }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.strikethrough, chevron: true, showText: false });
     strikethroughButton.dataset.pdfAnnotationKind = "strikethrough";
-    const noteButton = this.createPdfMenuButton(actions, "message-square-plus", "批注", () => {
+    const noteButton = this.createPdfMenuButton(actions, "message-square-plus", "注釈", () => {
       this.addPdfTextAnnotation("note");
     }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.note, showText: false });
     noteButton.dataset.pdfAnnotationKind = "note";
@@ -7081,16 +7120,16 @@ svg { overflow: visible !important; }
   private createPdfAnnotationMenu(menu: HTMLElement): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) return;
 
-    menu.setAttribute("aria-label", "PDF 批注操作");
+    menu.setAttribute("aria-label", "PDFの注釈操作");
     menu.createDiv({ cls: "mobile-ink-pdf-annotation-menu-summary" });
     const actions = menu.createDiv({ cls: "mobile-ink-pdf-menu-actions" });
-    this.createPdfMenuButton(actions, "copy", "复制", () => {
+    this.createPdfMenuButton(actions, "copy", "コピー", () => {
       void this.copyActivePdfAnnotationText();
     }, { disabled: () => !this.getActivePdfTextAnnotation()?.text, showText: true });
-    this.createPdfMenuButton(actions, "message-square-plus", "附注", () => {
+    this.createPdfMenuButton(actions, "message-square-plus", "コメント", () => {
       this.editActivePdfAnnotationNote();
     }, { disabled: () => !this.activePdfTextAnnotationId, swatch: this.pdfTextAnnotationColors.note, showText: true });
-    this.createPdfMenuButton(actions, "trash-2", "删除", () => {
+    this.createPdfMenuButton(actions, "trash-2", "削除", () => {
       this.deleteActivePdfTextAnnotation();
     }, { disabled: () => !this.activePdfTextAnnotationId, danger: true, showText: true });
 
@@ -7135,7 +7174,7 @@ svg { overflow: visible !important; }
     this.renderPdfTextAnnotations();
     this.hidePdfAnnotationMenu();
     this.saveQueue?.markDirty();
-    new Notice("已删除 PDF 批注");
+    new Notice("PDFの注釈を削除しました。");
   }
 
   private estimatePdfTextCharacterWidth(char: string, fontHeight: number): number {
@@ -8060,7 +8099,7 @@ svg { overflow: visible !important; }
 
       entry.textRendered = true;
     } catch (error) {
-      console.warn(`Mobile Ink Annotation: failed to render PDF text layer ${entry.pageNumber}`, error);
+      console.warn(`Mobile 講義スライドの手書き: failed to render PDF text layer ${entry.pageNumber}`, error);
     } finally {
       entry.textRendering = false;
     }
@@ -8398,9 +8437,9 @@ svg { overflow: visible !important; }
 
     try {
       await navigator.clipboard.writeText(text);
-      new Notice("已复制批注文本");
+      new Notice("注釈の文字をコピーしました。");
     } catch {
-      new Notice("复制失败，请使用系统复制菜单");
+      new Notice("コピーできませんでした。端末のコピーメニューを使ってください。");
     }
   }
 
@@ -8464,12 +8503,12 @@ svg { overflow: visible !important; }
 
   private getPdfAnnotationLabel(annotation: PdfTextAnnotation): string {
     return annotation.kind === "underline"
-      ? "下划线"
+      ? "下線"
       : annotation.kind === "strikethrough"
-        ? "删除线"
+        ? "取り消し線"
         : annotation.kind === "note"
-          ? "批注"
-          : "高亮";
+          ? "注釈"
+          : "ハイライト";
   }
 
   private bindPdfAnnotationMenuTarget(
@@ -8775,7 +8814,7 @@ class PdfTextNoteModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("mobile-ink-pdf-note-modal");
-    contentEl.createEl("h2", { text: "PDF 批注" });
+    contentEl.createEl("h2", { text: "PDFの注釈" });
     contentEl.createDiv({
       cls: "mobile-ink-pdf-note-selected-text",
       text: this.selectedText
@@ -8784,18 +8823,18 @@ class PdfTextNoteModal extends Modal {
     const input = contentEl.createEl("textarea", {
       cls: "mobile-ink-pdf-note-input",
       attr: {
-        placeholder: "输入批注内容"
+        placeholder: "注釈を入力"
       }
     });
     input.value = this.initialNote;
     contentEl.createDiv({
       cls: "mobile-ink-pdf-note-hint",
-      text: "Ctrl / Cmd + Enter 保存"
+      text: "Ctrl / Cmd + Enterで保存"
     });
 
     const actions = contentEl.createDiv({ cls: "mobile-ink-pdf-note-actions" });
     const cancelButton = actions.createEl("button", {
-      text: "取消",
+      text: "キャンセル",
       attr: { type: "button" }
     });
     const submitButton = actions.createEl("button", {
