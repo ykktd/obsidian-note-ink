@@ -28,6 +28,8 @@ type CanvasPointMapping = {
 };
 
 export class InkEngine {
+  private get eventDocument(): Document { return this.options.inputRoot?.ownerDocument ?? document; }
+  private get touchEventTarget(): Window|Document { return this.options.nativeScroll ? this.eventDocument : window; }
   private committedCtx: CanvasRenderingContext2D;
   private liveCtx: CanvasRenderingContext2D;
   private width = 1;
@@ -95,24 +97,24 @@ export class InkEngine {
     this.liveCanvas.removeEventListener("pointerup", this.onPointerUp);
     this.liveCanvas.removeEventListener("pointercancel", this.onPointerCancel);
     this.liveCanvas.removeEventListener("lostpointercapture", this.onLostPointerCapture);
-    window.removeEventListener("touchstart", this.onTouchStart, true);
-    window.removeEventListener("touchmove", this.onTouchMove, true);
-    window.removeEventListener("touchend", this.onTouchEnd, true);
-    window.removeEventListener("touchcancel", this.onTouchCancel, true);
+    this.touchEventTarget.removeEventListener("touchstart", this.onTouchStart as EventListener, true);
+    this.touchEventTarget.removeEventListener("touchmove", this.onTouchMove as EventListener, true);
+    this.touchEventTarget.removeEventListener("touchend", this.onTouchEnd as EventListener, true);
+    this.touchEventTarget.removeEventListener("touchcancel", this.onTouchCancel as EventListener, true);
     window.removeEventListener("pointerdown", this.onPointerDown, true);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointercancel", this.onPointerCancel);
-    document.removeEventListener("pointerdown", this.onPointerDown, true);
-    document.removeEventListener("pointermove", this.onPointerMove, true);
-    document.removeEventListener("pointerup", this.onPointerUp, true);
-    document.removeEventListener("pointercancel", this.onPointerCancel, true);
-    document.removeEventListener("selectstart", this.onDocumentBlockedGesture, true);
-    document.removeEventListener("dragstart", this.onDocumentBlockedGesture, true);
-    document.removeEventListener("contextmenu", this.onDocumentBlockedGesture, true);
-    document.removeEventListener("selectionchange", this.onDocumentSelectionChange);
-    document.removeEventListener("pointerdown", this.onDocumentPointerProbe, true);
-    document.removeEventListener("pointermove", this.onDocumentPointerProbe, true);
+    this.eventDocument.removeEventListener("pointerdown", this.onPointerDown, true);
+    this.eventDocument.removeEventListener("pointermove", this.onPointerMove, true);
+    this.eventDocument.removeEventListener("pointerup", this.onPointerUp, true);
+    this.eventDocument.removeEventListener("pointercancel", this.onPointerCancel, true);
+    this.eventDocument.removeEventListener("selectstart", this.onDocumentBlockedGesture, true);
+    this.eventDocument.removeEventListener("dragstart", this.onDocumentBlockedGesture, true);
+    this.eventDocument.removeEventListener("contextmenu", this.onDocumentBlockedGesture, true);
+    this.eventDocument.removeEventListener("selectionchange", this.onDocumentSelectionChange);
+    this.eventDocument.removeEventListener("pointerdown", this.onDocumentPointerProbe, true);
+    this.eventDocument.removeEventListener("pointermove", this.onDocumentPointerProbe, true);
 
     if (this.liveRenderRaf !== null) cancelAnimationFrame(this.liveRenderRaf);
     if (this.committedRenderRaf !== null) cancelAnimationFrame(this.committedRenderRaf);
@@ -197,20 +199,20 @@ export class InkEngine {
 
   private bindEvents(): void {
     this.liveCanvas.addEventListener("lostpointercapture", this.onLostPointerCapture, { passive: false });
-    window.addEventListener("touchstart", this.onTouchStart, { passive: false, capture: true });
-    window.addEventListener("touchmove", this.onTouchMove, { passive: false, capture: true });
-    window.addEventListener("touchend", this.onTouchEnd, { passive: false, capture: true });
-    window.addEventListener("touchcancel", this.onTouchCancel, { passive: false, capture: true });
-    document.addEventListener("pointerdown", this.onPointerDown, { passive: false, capture: true });
-    document.addEventListener("pointermove", this.onPointerMove, { passive: false, capture: true });
-    document.addEventListener("pointerup", this.onPointerUp, { passive: false, capture: true });
-    document.addEventListener("pointercancel", this.onPointerCancel, { passive: false, capture: true });
-    document.addEventListener("selectstart", this.onDocumentBlockedGesture, { capture: true });
-    document.addEventListener("dragstart", this.onDocumentBlockedGesture, { capture: true });
-    document.addEventListener("contextmenu", this.onDocumentBlockedGesture, { capture: true });
-    document.addEventListener("selectionchange", this.onDocumentSelectionChange);
-    document.addEventListener("pointerdown", this.onDocumentPointerProbe, { capture: true });
-    document.addEventListener("pointermove", this.onDocumentPointerProbe, { capture: true });
+    this.touchEventTarget.addEventListener("touchstart", this.onTouchStart as EventListener, { passive: false, capture: true });
+    this.touchEventTarget.addEventListener("touchmove", this.onTouchMove as EventListener, { passive: false, capture: true });
+    this.touchEventTarget.addEventListener("touchend", this.onTouchEnd as EventListener, { passive: false, capture: true });
+    this.touchEventTarget.addEventListener("touchcancel", this.onTouchCancel as EventListener, { passive: false, capture: true });
+    this.eventDocument.addEventListener("pointerdown", this.onPointerDown, { passive: false, capture: true });
+    this.eventDocument.addEventListener("pointermove", this.onPointerMove, { passive: false, capture: true });
+    this.eventDocument.addEventListener("pointerup", this.onPointerUp, { passive: false, capture: true });
+    this.eventDocument.addEventListener("pointercancel", this.onPointerCancel, { passive: false, capture: true });
+    this.eventDocument.addEventListener("selectstart", this.onDocumentBlockedGesture, { capture: true });
+    this.eventDocument.addEventListener("dragstart", this.onDocumentBlockedGesture, { capture: true });
+    this.eventDocument.addEventListener("contextmenu", this.onDocumentBlockedGesture, { capture: true });
+    this.eventDocument.addEventListener("selectionchange", this.onDocumentSelectionChange);
+    this.eventDocument.addEventListener("pointerdown", this.onDocumentPointerProbe, { capture: true });
+    this.eventDocument.addEventListener("pointermove", this.onDocumentPointerProbe, { capture: true });
   }
 
   private setupInkCanvas(canvas: HTMLCanvasElement, displayScale: number): CanvasRenderingContext2D {
@@ -410,7 +412,7 @@ export class InkEngine {
     if (!this.isEventInsideAnnotation(event)) return;
     const canvasTouches = Array.from(event.touches).filter(touch => !(touch.target instanceof Element && touch.target.closest(".mobile-ink-quick-eraser")));
     if (canvasTouches.length > 1) {
-      if (this.activeTouchId !== null) {
+      if (this.activeTouchId !== null || (this.options.nativeScroll && this.activePointerId !== null)) {
         this.finishInterruptedInput();
       }
       return;
@@ -422,7 +424,7 @@ export class InkEngine {
 
     const canWrite = this.toolState.acceptTouchInput || this.shouldTreatTouchAsPen(touch);
     if (!canWrite) {
-      if (performance.now() < this.suppressTouchPanUntil) {
+      if (this.options.nativeScroll ? this.isInputActive() : performance.now() < this.suppressTouchPanUntil) {
         event.preventDefault();
         event.stopPropagation();
         this.debugTouchEvent("reject-touch-palm", touch, event);
@@ -547,6 +549,7 @@ export class InkEngine {
   };
 
   private onDocumentBlockedGesture = (event: Event): void => {
+    if (this.options.nativeScroll && !this.isInputActive()) return;
     if (this.isEventFromToolbar(event)) return;
     if (!this.inputEnabled) return;
     if (!this.isEventInsideAnnotation(event)) return;
@@ -557,8 +560,9 @@ export class InkEngine {
 
   private onDocumentSelectionChange = (): void => {
     if (!this.inputEnabled) return;
+    if (this.options.nativeScroll && !this.isInputActive()) return;
 
-    const selection = document.getSelection();
+    const selection = this.eventDocument.getSelection();
     if (!selection || selection.isCollapsed) return;
 
     const anchorNode = selection.anchorNode;
@@ -707,6 +711,7 @@ export class InkEngine {
   }
 
   private shouldRejectTouchDuringPen(event: PointerEvent): boolean {
+    if(this.options.nativeScroll)return event.pointerType === "touch" && this.isInputActive();
     return event.pointerType === "touch"
       && performance.now() < this.suppressTouchPanUntil
       && !this.shouldTreatTouchPointerAsPen(event);
@@ -719,6 +724,7 @@ export class InkEngine {
   private shouldTreatTouchPointerAsPen(event: PointerEvent): boolean {
     if (event.pointerType !== "touch") return false;
     if (this.toolState.acceptTouchInput) return true;
+    if (this.options.nativeScroll) return false;
     if (performance.now() >= this.suppressTouchPanUntil) return false;
 
     return this.hasFineContact(event.width, event.height, event.pressure);
@@ -735,6 +741,7 @@ export class InkEngine {
     };
 
     if (candidate.touchType === "stylus") return true;
+    if (this.options.nativeScroll) return false;
     if (performance.now() >= this.suppressTouchPanUntil) return false;
     return this.hasFineContact(candidate.radiusX, candidate.radiusY, candidate.force);
   }
@@ -758,6 +765,7 @@ export class InkEngine {
   }
 
   private beginPan(event: PointerEvent): void {
+    if(this.options.nativeScroll)return;
     event.preventDefault();
     event.stopPropagation();
     this.panPointerId = event.pointerId;
@@ -962,6 +970,7 @@ export class InkEngine {
 
   private isNodeInsideAnnotation(node: Node | null): boolean {
     if (!node) return false;
+    if(this.options.inputRoot)return this.options.inputRoot.contains(node);
 
     const root = this.scrollEl.closest(".mobile-ink-root");
     return !!root
@@ -970,7 +979,7 @@ export class InkEngine {
   }
 
   private clearTextSelection(): void {
-    document.getSelection()?.removeAllRanges();
+    this.eventDocument.getSelection()?.removeAllRanges();
   }
 
   private nextSampleTime(time = performance.now()): number {

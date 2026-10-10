@@ -17,6 +17,21 @@ export type InkStroke = {
   points: InkPoint[];
 };
 
+/** PDF user space, independent of scroll position, zoom and display rotation. */
+export type PdfInkStroke = InkStroke & { pageNumber: number };
+export type PdfAnnotationFile = {
+  version: 2;
+  kind: "pdf";
+  coordinateSpace: "pdf-user-space";
+  sourcePath: string;
+  sourceMtime: number;
+  pageCount: number;
+  strokes: PdfInkStroke[];
+  /** Rectangles are in PDF user space; pageWidth/pageHeight are not used. */
+  pdfTextAnnotations: PdfTextAnnotation[];
+  updatedAt: number;
+};
+
 export type PdfTextAnnotationKind = "highlight" | "underline" | "strikethrough" | "note";
 
 export type PdfTextAnnotationRect = {
@@ -27,6 +42,8 @@ export type PdfTextAnnotationRect = {
 };
 
 export type PdfTextAnnotation = {
+  /** v2 only: orientation when the text mark was created (for underline/strike). */
+  rotation?: number;
   id: string;
   kind: PdfTextAnnotationKind;
   pageNumber: number;
@@ -154,6 +171,10 @@ export type InkToolState = {
 };
 
 export type InkEngineOptions = {
+  /** Let the native viewer handle finger scroll/pinch instead of manual panning. */
+  nativeScroll?: boolean;
+  /** Limit captured input to this page, including text-layer event targets. */
+  inputRoot?: HTMLElement;
   /** PageInkController owns history for tiled views. */
   externalHistory?: boolean;
   onChange: () => void;

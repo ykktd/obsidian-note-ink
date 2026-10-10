@@ -99,3 +99,57 @@ test('a paused autosave does not start another write after an in-flight save',as
   q.markDirty();const saving=q.flush(false);await Promise.resolve();q.setPaused(true);q.markDirty();release();await saving;
   assert.equal(calls,1);await q.flush();assert.equal(calls,2);
 });
+
+import {migratePdfAnnotation,toPdfStroke,toViewportStroke,validatePdfAnnotation,pdfMarkShapes,type PdfDocument,type PdfViewport} from '../src/pdf/pdfCoordinates';
+import {StrokeStore} from '../src/ink/StrokeStore';
+import type {AnnotationFile,PdfAnnotationFile} from '../src/ink/types';
+import {TFile} from './nodeObsidian';
+function pageModel(rotation=0){return {getViewport:({scale,rotation:override=rotation}: {scale:number;rotation?:number}):PdfViewport=>{
+  const table:Record<number,Matrix>={0:[1,0,0,-1,-20,300],90:[0,1,1,0,-10,-20],180:[-1,0,0,1,400,-10],270:[0,-1,-1,0,300,400]};
+  return {width:(override%180===0?380:290)*scale,height:(override%180===0?290:380)*scale,scale,rotation:override,transform:table[override].map(x=>x*scale) as Matrix};
+}};}
+import type {Matrix} from '../src/pdf/exportAnnotatedPdf';
+const legacy=(strokes:InkStroke[],height=580):AnnotationFile=>({version:1,sourcePath:'test.pdf',sourceMtime:1,pageWidth:760,pageHeight:height,strokes,pdfTextAnnotations:[],updatedAt:1});
+test('v1 migration preserves crop/rotation, pressure and timing; subsequent saves use only v2',async()=>{
+  const pdf:PdfDocument={numPages:2,getPage:async n=>pageModel(n===1?0:90),getData:async()=>new Uint8Array()};
+  const layouts=[{matrix:[2,0,0,-2,-40,600] as Matrix,offset:0},{matrix:[0,580/380,580/380,0,(-10*580/380)+(760-290*580/380)/2,-20*580/380] as Matrix,offset:592}];
+  const input=layouts.map((layout,i)=>({id:String(i),tool:'pen' as const,color:'#112233',width:3,points:[{x:0,y:0,t:17,pressure:.61}].map(p=>{const [x,y]=transformPoint(layout.matrix,140,130);return {...p,x,y:y+layout.offset};})}));
+  const migrated=await migratePdfAnnotation(legacy(input,1172),pdf);
+  for(const [i,s]of migrated.strokes.entries()){assert.equal(s.pageNumber,i+1);assert.ok(Math.abs(s.points[0].x-140)<1e-8);assert.ok(Math.abs(s.points[0].y-130)<1e-8);assert.equal(s.points[0].pressure,.61);assert.equal(s.points[0].t,17);}
+  assert.equal(migrated.version,2);assert.equal('pageHeight' in migrated,false);
+});
+test('v1 single-page minimum height and boundary-crossing ink do not shift or vanish',async()=>{
+  const single:PdfDocument={numPages:1,getPage:async()=>pageModel(),getData:async()=>new Uint8Array()};
+  const a=legacy([{...line('one'),points:[{x:120,y:170,t:1,pressure:1}]}],480);a.pageWidth=380;
+  const converted=await migratePdfAnnotation(a,single);assert.equal(converted.strokes[0].points[0].x,140);assert.equal(converted.strokes[0].points[0].y,130);
+  const pdf={...single,numPages:2};const cross=legacy([{...line('cross'),points:[{x:120,y:285,t:1,pressure:.8},{x:130,y:405,t:2,pressure:.9}]}],592);cross.pageWidth=380;
+  const both=await migratePdfAnnotation(cross,pdf);assert.deepEqual(both.strokes.map(s=>s.pageNumber),[1,2]);assert.equal(both.strokes[0].points.length,2);assert.equal(both.strokes[1].points.length,2);assert.notEqual(both.strokes[0].id,both.strokes[1].id);
+});
+test('drawing coordinates survive arbitrary zoom and right-angle display rotations',()=>{
+  for(const rotation of [0,90,180,270])for(const scale of [.7,1,3.2]){
+    const viewport=pageModel(rotation).getViewport({scale});const original={...line('roundtrip'),points:[{x:123.4,y:152.8,t:9,pressure:.72}]};
+    const local=toViewportStroke(original,viewport),converted=toPdfStroke(local,1,viewport);
+    assert.ok(Math.abs(converted.points[0].x-original.points[0].x)<1e-9);assert.ok(Math.abs(converted.points[0].y-original.points[0].y)<1e-9);assert.ok(Math.abs(converted.width-original.width)<1e-9);
+  }
+});
+test('underline orientation is retained when viewing/exporting at another rotation',()=>{
+  const page=pageModel(),mark={id:'u',kind:'underline' as const,rotation:90,pageNumber:1,color:'#112233',text:'text',rects:[{x:100,y:100,width:20,height:90}],createdAt:1};
+  const shape=pdfMarkShapes(mark,page,page.getViewport({scale:1}))[0];assert.ok(shape.width<2);assert.ok(shape.height>80);
+});
+test('v2 refuses damaged/future data and a changed PDF page count',()=>{
+  const good:PdfAnnotationFile={version:2,kind:'pdf',coordinateSpace:'pdf-user-space',sourcePath:'test.pdf',sourceMtime:1,pageCount:1,strokes:[{...line('a'),pageNumber:1}],pdfTextAnnotations:[],updatedAt:1};
+  assert.deepEqual(validatePdfAnnotation(good,'test.pdf',1),good);
+  for(const bad of [{...good,version:3},{...good,pageCount:2},{...good,strokes:[{...good.strokes[0],points:[{x:NaN,y:1,t:1,pressure:1}]}]},{...good,strokes:[...good.strokes,...good.strokes]}])assert.throws(()=>validatePdfAnnotation(bad,'test.pdf',1));
+});
+test('migration backup precedes the first v2 write; failed writes and stale sessions preserve data',async()=>{
+  const disk=new Map<string,string>(),file=new TFile('test.pdf');let failing=false;
+  const app:any={vault:{getAbstractFileByPath:()=>file,adapter:{exists:async(p:string)=>disk.has(p),mkdir:async()=>{},read:async(p:string)=>disk.get(p)!,write:async(p:string,s:string)=>{if(failing&&p.endsWith('.ink.json'))throw new Error('full');disk.set(p,s);}}}};
+  const store=new StrokeStore(app,{manifest:{id:'test'}} as any),path=store.getAnnotationPath(file.path),raw=JSON.stringify(legacy([line('saved')],480));disk.set(path,raw);
+  const pdf:PdfDocument={numPages:1,getPage:async()=>pageModel(),getData:async()=>new Uint8Array()};const loaded=await store.loadPdf(file.path,pdf);
+  assert.equal(disk.get(path),raw);failing=true;await assert.rejects(store.savePdf(loaded.annotation,loaded.raw),/full/);assert.equal(disk.get(path),raw);
+  assert.equal([...disk].filter(([p])=>p.endsWith('.bak')).length,1);assert.equal([...disk].find(([p])=>p.endsWith('.bak'))![1],raw);
+  failing=false;const saved=await store.savePdf(loaded.annotation,loaded.raw);assert.equal(JSON.parse(saved).version,2);await assert.rejects(store.savePdf(loaded.annotation,raw),/別の画面/);assert.equal(disk.get(path),saved);
+  disk.set(path,'{"version":3}');await assert.rejects(store.loadPdf(file.path,pdf));assert.equal(disk.get(path),'{"version":3}');
+  const damaged=legacy([],480);damaged.pdfTextAnnotations=[{id:'bad-mark',kind:'highlight',pageNumber:1,color:'#112233',text:'text',createdAt:1,rects:[{x:1,y:1,width:-1,height:20}]}];
+  const damagedRaw=JSON.stringify(damaged);disk.set(path,damagedRaw);await assert.rejects(store.loadPdf(file.path,pdf),/旧文字注釈/);assert.equal(disk.get(path),damagedRaw);
+});

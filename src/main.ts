@@ -2,6 +2,7 @@ import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } 
 import { StrokeStore } from "./ink/StrokeStore";
 import { AnnotationView } from "./views/AnnotationView";
 import { VIEW_TYPE_MOBILE_INK } from "./constants";
+import { NativePdfAnnotationSession } from "./pdf/NativePdfAnnotationSession";
 
 type MobileInkAnnotationSettings = {
   openPdfWithAnnotationByDefault: boolean;
@@ -16,6 +17,9 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   settings!: MobileInkAnnotationSettings;
   private defaultPdfOpenPath: string | null = null;
   private readonly sourceViewLeaves = new WeakMap<WorkspaceLeaf,string>();
+  private readonly pdfSessions = new Map<WorkspaceLeaf,NativePdfAnnotationSession>();
+  private pdfOpening:Promise<void>=Promise.resolve();
+  private unloading=false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -27,10 +31,19 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     );
 
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      this.cleanPdfSessions();
       this.queueOpenPdfWithAnnotationByDefault(file);
     }));
+    this.registerEvent(this.app.workspace.on("layout-change",()=>this.cleanPdfSessions()));
 
     this.addSettingTab(new MobileInkAnnotationSettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(()=>{
+      for(const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MOBILE_INK)){
+        const state=leaf.getViewState().state as {sourcePath?:string;file?:string}|undefined;
+        const file=this.app.vault.getAbstractFileByPath(state?.sourcePath??state?.file??"");
+        if(file instanceof TFile&&file.extension==="pdf")void this.openInkForFile(file,leaf).catch(error=>console.error("Note Ink: PDF restore failed",error));
+      }
+    });
 
     this.addRibbonIcon("pencil", "手書き注釈を開く", async () => {
       await this.openInkForActiveFile();
@@ -54,15 +67,19 @@ export default class MobileInkAnnotationPlugin extends Plugin {
       name: "書き込み入りPDFを書き出す",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(AnnotationView);
+        const session=this.pdfSessions.get(this.app.workspace.activeLeaf!);
         const file = this.app.workspace.getActiveFile();
-        const canRun = !!view && file instanceof TFile && file.extension === "pdf";
-        if (!checking && canRun) void view!.exportPdfCopy();
+        const canRun = (!!view||!!session&&!session.closed) && file instanceof TFile && file.extension === "pdf";
+        if (!checking && canRun) void (session&&!session.closed?session.exportPdfCopy():view!.exportPdfCopy());
         return canRun;
       }
     });
   }
 
   onunload(): void {
+    this.unloading=true;
+    for(const session of this.pdfSessions.values())session.unload();
+    this.pdfSessions.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_MOBILE_INK);
   }
 
@@ -83,6 +100,10 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
   async openInkForFile(file: TFile, leaf: WorkspaceLeaf = this.app.workspace.getLeaf(true)): Promise<void> {
     this.sourceViewLeaves.delete(leaf);
+    if(file.extension==="pdf"){
+      const task=this.pdfOpening.catch(()=>{}).then(()=>this.openNativePdfAnnotation(file,leaf));
+      this.pdfOpening=task;return task;
+    }
     await leaf.setViewState({
       type: VIEW_TYPE_MOBILE_INK,
       active: true,
@@ -94,8 +115,29 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  private async openNativePdfAnnotation(file:TFile,leaf:WorkspaceLeaf):Promise<void>{
+    if(this.unloading)return;
+    const current=this.pdfSessions.get(leaf);
+    if(current&&!current.closed&&current.sourcePath===file.path&&leaf.view===current.binding.view){this.app.workspace.revealLeaf(leaf);return;}
+    // Keep one editable session per PDF; other tabs continue to use normal PDF viewing.
+    for(const [other,session]of this.pdfSessions)if(other===leaf||session.sourcePath===file.path){await session.close();this.pdfSessions.delete(other);}
+    if(leaf.view?.getViewType()!=="pdf"||(leaf.view as any).file?.path!==file.path)await leaf.setViewState({type:"pdf",active:true,state:{file:file.path}});
+    this.app.workspace.revealLeaf(leaf);
+    try{
+      const session=await NativePdfAnnotationSession.open(this.app,this.store,leaf,file.path);
+      if(this.unloading){await session.close();return;}this.pdfSessions.set(leaf,session);
+    }catch(error){console.error("Note Ink: native PDF annotation unavailable",error);new Notice(error instanceof Error?error.message:"注釈を開けませんでした。通常のPDF表示はそのまま使えます。",10000);}
+  }
+  private cleanPdfSessions():void{
+    for(const [leaf,session]of this.pdfSessions){
+      if(session.closed){this.pdfSessions.delete(leaf);continue;}
+      if(leaf.view!==session.binding.view||(leaf.view as any).file?.path!==session.sourcePath)void session.close().then(()=>this.pdfSessions.delete(leaf)).catch(error=>console.error("Note Ink: PDF close failed",error));
+    }
+  }
+
   async openSourceWithoutAnnotation(file:TFile,leaf:WorkspaceLeaf):Promise<void> {
     this.sourceViewLeaves.set(leaf,file.path);
+    const session=this.pdfSessions.get(leaf);if(session){await session.close();this.pdfSessions.delete(leaf);}
     try {await leaf.setViewState({type:file.extension==='pdf' ? 'pdf' : 'markdown',active:true,state:{file:file.path}});}
     catch(error){this.sourceViewLeaves.delete(leaf);throw error;}
   }
@@ -107,6 +149,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
     const leaf = this.app.workspace.activeLeaf;
     if (!leaf) return;
+    const session=this.pdfSessions.get(leaf);if(session&&!session.closed&&session.sourcePath===file.path)return;
     const sourceViewPath=this.sourceViewLeaves.get(leaf);
     if(sourceViewPath===file.path)return;
     if(sourceViewPath)this.sourceViewLeaves.delete(leaf);
@@ -122,8 +165,6 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     const activePath = activeFile instanceof TFile ? activeFile.path : "";
     const leafFile = (leaf.view as { file?: unknown }).file;
     const leafFilePath = leafFile instanceof TFile ? leafFile.path : "";
-
-    if (viewState.type === VIEW_TYPE_MOBILE_INK && statePath === file.path) return;
 
     const leafLooksRelatedToFile = activePath === file.path
       || leafFilePath === file.path

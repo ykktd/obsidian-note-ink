@@ -15,6 +15,7 @@ export type ExportPage = {
   transform: Matrix;
 };
 export type ExportProgress = (completed: number, total: number) => void;
+export type PageOverlayContent = {strokes:InkStroke[];annotations:PdfTextAnnotation[];markShapes?:Map<string,PdfTextAnnotation["rects"]>};
 const MAX_OVERLAY_PIXELS = 4_000_000;
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 
@@ -44,6 +45,7 @@ function safeColor(value: string): string {
 export function drawPageOverlay(
   ctx: CanvasRenderingContext2D, page: ExportPage,
   strokes: readonly InkStroke[], annotations: readonly PdfTextAnnotation[],
+  markShapes?:Map<string,PdfTextAnnotation["rects"]>,
 ): void {
   // Match the viewer: text marks are behind the handwriting canvas.
   for (const annotation of annotations) {
@@ -53,9 +55,10 @@ export function drawPageOverlay(
     ctx.save();
     ctx.fillStyle = safeColor(annotation.color);
     ctx.globalAlpha = annotation.kind === 'underline' || annotation.kind === 'strikethrough' ? 0.86 : 0.42;
-    for (const rect of annotation.rects) {
+    for (const rect of markShapes?.get(annotation.id)??annotation.rects) {
       const x = rect.x*sx, y = rect.y*sy, w = rect.width*sx, h = rect.height*sy;
-      if (annotation.kind === 'underline') ctx.fillRect(x,y+Math.max(1,h-2),w,2);
+      if(markShapes)ctx.fillRect(x,y,w,h);
+      else if (annotation.kind === 'underline') ctx.fillRect(x,y+Math.max(1,h-2),w,2);
       else if (annotation.kind === 'strikethrough') ctx.fillRect(x,y+Math.max(1,Math.round(h/2)-1),w,2);
       else ctx.fillRect(x,y,w,h);
     }
@@ -84,6 +87,7 @@ async function pngBytes(canvas: HTMLCanvasElement): Promise<ArrayBuffer> {
 export async function exportAnnotatedPdf(
   source: Uint8Array, pages: readonly ExportPage[], strokes: readonly InkStroke[],
   annotations: readonly PdfTextAnnotation[], onProgress: ExportProgress = () => {},
+  pageContent?:Map<number,PageOverlayContent>,
 ): Promise<Uint8Array> {
   if (source.byteLength > MAX_SOURCE_BYTES) throw new Error('100MBを超えるPDFは、この版では書き出せません。');
   const doc = await PDFDocument.load(source.slice(), {updateMetadata:false});
@@ -95,8 +99,10 @@ export async function exportAnnotatedPdf(
       throw new Error('PDFのページ情報が一致しません。');
     }
     const page=doc.getPage(index);
-    const hasInk=strokes.some(s=>s.points.some(p=>p.y>=layout.offsetY-s.width && p.y<=layout.offsetY+layout.height+s.width));
-    const marks=annotations.filter(a=>a.pageNumber===layout.pageNumber);
+    const content=pageContent?.get(layout.pageNumber);
+    const pageStrokes=pageContent?(content?.strokes??[]):strokes;
+    const hasInk=pageStrokes.some(s=>s.points.some(p=>p.y>=layout.offsetY-s.width && p.y<=layout.offsetY+layout.height+s.width));
+    const marks=pageContent?(content?.annotations??[]):annotations.filter(a=>a.pageNumber===layout.pageNumber);
     if (hasInk || marks.length) {
       const canvas=document.createElement('canvas');
       // One bounded canvas at a time, irrespective of the number of slides.
@@ -107,7 +113,7 @@ export async function exportAnnotatedPdf(
         const ctx=canvas.getContext('2d');
         if (!ctx) throw new Error('PDF保存用の描画領域を作成できませんでした。');
         ctx.setTransform(canvas.width/layout.width,0,0,canvas.height/layout.height,0,0);
-        drawPageOverlay(ctx,layout,strokes,marks);
+        drawPageOverlay(ctx,layout,pageStrokes,marks,content?.markShapes);
         const image=await doc.embedPng(await pngBytes(canvas));
         const key=page.node.newXObject('LectureInk',image.ref);
         page.pushOperators(pushGraphicsState(),concatTransformationMatrix(...overlayMatrix(layout)),drawObject(key),popGraphicsState());

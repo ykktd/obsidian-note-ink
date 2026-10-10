@@ -1,4 +1,5 @@
 const create=(parent:HTMLElement,tag:string,options:any={})=>{
+  if(typeof options==='string')options={cls:options};
   const el=document.createElement(tag);
   if(options.cls)el.className=options.cls;
   if(options.text!==undefined)el.textContent=options.text;
@@ -22,8 +23,11 @@ export class FileView {
   addAction(icon:string,title:string,callback:any){const button=create(this.actions,'button',{text:title,attr:{'aria-label':title}});button.addEventListener('click',callback);return button;}
 }
 export class Notice {el:HTMLElement;constructor(message:string,timeout=4000){this.el=create(document.body,'div',{cls:'notice',text:message});if(timeout)setTimeout(()=>this.hide(),timeout);}setMessage(message:string){this.el.textContent=message;}hide(){this.el.remove();}}
-export class Menu {addItem(fn:any){fn({setTitle(){return this;},setIcon(){return this;},setDisabled(){return this;},onClick(){return this;}});}addSeparator(){}}
-export class Modal {contentEl=create(document.body,'div');constructor(public app:any){}open(){}close(){this.contentEl.remove();}}
+export class Menu {
+ items:any[]=[];addItem(fn:any){const item:any={title:'',disabled:false,callback:null,setTitle(v:string){this.title=v;return this;},setIcon(){return this;},setDisabled(v:boolean){this.disabled=v;return this;},setChecked(){return this;},onClick(fn:any){this.callback=fn;return this;}};fn(item);this.items.push(item);return this;}
+ addSeparator(){}showAtMouseEvent(){const menu=create(document.body,'div',{cls:'test-menu'});for(const item of this.items){const b=create(menu,'button',{text:item.title});(b as HTMLButtonElement).disabled=item.disabled;b.onclick=()=>{menu.remove();item.callback?.();};}}
+}
+export class Modal {contentEl=create(document.body,'div',{cls:'modal-content'});constructor(public app:any){}open(){(this as any).onOpen?.();}close(){this.contentEl.remove();}}
 export class Setting {}
 export class Plugin {manifest={id:"obsidian-lecture-ink"};constructor(public app:any){}}
 export class PluginSettingTab {constructor(public app:any,public plugin:any){}}
