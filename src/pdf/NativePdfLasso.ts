@@ -1,6 +1,7 @@
 import { Menu, Notice, setIcon } from 'obsidian';
 import type { InkStroke } from '../ink/types';
-import { lassoHits, strokeBounds, transformStrokes, type Point, type Bounds } from '../ink/lasso';
+import { lassoHits, strokeBounds, transformStrokes, snapRotation, type Point, type Bounds } from '../ink/lasso';
+import { visibleInkBounds } from '../ink/visibleBounds';
 import { drawStrokes, setupCanvas } from '../ink/renderer';
 import { toPdfStroke, toViewportStroke, type PdfViewport } from './pdfCoordinates';
 import type { NativePageView, NativePdfBinding } from './NativePdfViewer';
@@ -8,7 +9,7 @@ import type { NativePdfInkController } from './NativePdfInkController';
 
 type Frame={center:Point;width:number;height:number;angle:number};
 type Transform={center:Point;dx:number;dy:number;scale:number;angle:number};
-type Gesture={id:number;kind:'lasso'|'move'|'scale'|'rotate';start:Point;points:Point[];source:InkStroke[];changed:boolean;corner?:string;frame:Frame|null;rect:DOMRect;latest:Point};
+type Gesture={id:number;kind:'lasso'|'move'|'scale'|'rotate';start:Point;points:Point[];source:InkStroke[];changed:boolean;corner?:string;frame:Frame|null;rect:DOMRect;latest:Point;snap?:number|null;rotation?:number};
 const viewerEvents=['scalechanging','rotationchanging','pagechanging'];
 /** Selection is ephemeral. Only a finished gesture enters the existing save/history path. */
 export class NativePdfLasso {
@@ -61,8 +62,8 @@ export class NativePdfLasso {
   private local():InkStroke[]{return this.viewport?this.controller.annotation.strokes.filter(s=>this.ids.has(s.id)&&s.pageNumber===this.page?.id).map(s=>toViewportStroke(s,this.viewport!)):[];}
   private interactiveBounds(b:Bounds|null):Bounds|null{
     if(!b||!this.page||!this.viewport)return b;const r=this.page.div.getBoundingClientRect();
-    const width=Math.max(b.width,44*this.viewport.width/r.width),height=Math.max(b.height,44*this.viewport.height/r.height);
-    return {x:b.x-(width-b.width)/2,y:b.y-(height-b.height)/2,width,height};
+    const px=3*this.viewport.width/r.width,py=3*this.viewport.height/r.height;
+    return {x:b.x-px,y:b.y-py,width:b.width+px*2,height:b.height+py*2};
   }
   private currentPage():NativePageView|null{const p=this.binding.viewer.getPageView(this.binding.viewer.currentPageNumber-1);return p?.pdfPage?p:null;}
   private usePage(page:NativePageView):void{
@@ -73,7 +74,7 @@ export class NativePdfLasso {
   private copy():void{if(!this.ids.size)return;this.clipboard=structuredClone(this.local());new Notice('コピーしました。貼り付けたい場所を長押ししてください。');}
   private paste(page:NativePageView,point:Point):void{
     if(!this.clipboard.length||!page.pdfPage||!page.div.isConnected||this.binding.viewer.pdfDocument!==this.binding.pdf)return;
-    this.usePage(page);const bounds=strokeBounds(this.clipboard)!;
+    this.usePage(page);const bounds=visibleInkBounds(this.clipboard,this.doc);if(!bounds)return;
     const strokes=transformStrokes(this.clipboard,{x:0,y:0},point.x-bounds.x-bounds.width/2,point.y-bounds.y-bounds.height/2).map(s=>toPdfStroke({...s,id:crypto.randomUUID()},page.id,this.viewport!));
     this.frame=null;this.ids=new Set(strokes.map(s=>s.id));this.controller.replaceStrokes([...this.controller.annotation.strokes,...strokes]);this.render();
   }
@@ -144,7 +145,10 @@ export class NativePdfLasso {
       const scale=Math.max(.05,Math.min(20,((p.x-anchor.x)*dx+(p.y-anchor.y)*dy)/Math.max(1,dx*dx+dy*dy)));
       return {center:anchor,dx:0,dy:0,scale,angle:0};
     }
-    return {center,dx:0,dy:0,scale:1,angle:Math.atan2(p.y-center.y,p.x-center.x)-Math.atan2(g.start.y-center.y,g.start.x-center.x)};
+    let raw=f.angle+Math.atan2(p.y-center.y,p.x-center.x)-Math.atan2(g.start.y-center.y,g.start.x-center.x);
+    raw+=Math.round(((g.rotation??f.angle)-raw)/(2*Math.PI))*2*Math.PI;g.rotation=raw;
+    const snapped=snapRotation(raw,g.snap??null);g.snap=snapped.locked;
+    return {center,dx:0,dy:0,scale:1,angle:snapped.angle-f.angle};
   }
   private schedulePreview():void{
     if(this.animation!==null)return;
@@ -210,8 +214,9 @@ export class NativePdfLasso {
   }
   private render():void{
     if(!this.page||!this.viewport)return;this.ensureOverlay();
-    const b=this.frame?null:this.interactiveBounds(strokeBounds(this.local()));
+    const b=this.frame?null:this.interactiveBounds(visibleInkBounds(this.local(),this.doc));
     if(b)this.frame={center:{x:b.x+b.width/2,y:b.y+b.height/2},width:b.width,height:b.height,angle:0};
+    if(!this.frame)this.ids.clear();
     if(!this.frame||!this.ids.size){this.svg!.replaceChildren();this.overlay!.querySelectorAll('button,.note-ink-lasso-move').forEach(e=>e.remove());return;}
     if(!this.svg!.querySelector('.note-ink-lasso-bounds')){
       this.svg!.replaceChildren();
@@ -235,7 +240,7 @@ export class NativePdfLasso {
     const move=overlay.querySelector<HTMLElement>('.note-ink-lasso-move')!;
     Object.assign(move.style,{left:`${(frame.center.x-frame.width/2)/v.width*100}%`,top:`${(frame.center.y-frame.height/2)/v.height*100}%`,width:`${frame.width/v.width*100}%`,height:`${frame.height/v.height*100}%`,transform:`rotate(${frame.angle}rad)`});
     const position=(el:HTMLElement,p:Point)=>{el.style.left=`${p.x/v.width*100}%`;el.style.top=`${p.y/v.height*100}%`;};
-    ['nw','ne','sw','se'].forEach((corner,i)=>{const h=overlay.querySelector<HTMLElement>(`[data-lasso-handle="scale-${corner}"]`)!;position(h,points[i]);h.style.setProperty('--lasso-angle',`${frame.angle}rad`);});
+    ['nw','ne','sw','se'].forEach((corner,i)=>{const h=overlay.querySelector<HTMLElement>(`[data-lasso-handle="scale-${corner}"]`)!;position(h,points[i]);h.style.setProperty('--lasso-angle',`${frame.angle}rad`);const size=Math.min(28,Math.max(12,Math.min(frame.width*r.width/v.width,frame.height*r.height/v.height)));h.style.width=h.style.height=h.style.minWidth=`${size}px`;});
     const top=this.framePoint(frame,0,-frame.height/2),action=this.framePoint(frame,0,-frame.height/2-38*v.height/r.height);
     const line=this.svg!.querySelector('line')!;for(const [key,value]of Object.entries({x1:top.x,y1:top.y,x2:action.x,y2:action.y}))line.setAttribute(key,String(value));
     position(overlay.querySelector<HTMLElement>('[data-lasso-handle="rotate"]')!,action);

@@ -214,3 +214,16 @@ test('lasso transformations preserve erasures, input metadata and reversible PDF
  }
  assert.throws(()=>transformStrokes([original],{x:0,y:0},0,0,0));
 });
+
+import {snapRotation} from '../src/ink/lasso';
+test('rotation snaps to cardinal angles with a stable release band',()=>{
+ const rad=(d:number)=>d*Math.PI/180;
+ for(const target of [-360,-270,-180,-90,0,90,180,270,360,450]){
+  for(const side of [-1,1]){
+   const acquired=snapRotation(rad(target+side*3));assert.ok(Math.abs(acquired.angle-rad(target))<1e-10);assert.notEqual(acquired.locked,null);
+   assert.equal(snapRotation(rad(target+side*6),acquired.locked).angle,acquired.angle);
+   const released=snapRotation(rad(target+side*8),acquired.locked);assert.equal(released.locked,null);assert.equal(released.angle,rad(target+side*8));
+  }
+ }
+ assert.equal(snapRotation(rad(45)).angle,rad(45));
+});

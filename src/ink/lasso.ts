@@ -33,3 +33,11 @@ export function transformStrokes(strokes:readonly InkStroke[],center:Point,dx=0,
   const point=<T extends Point>(p:T):T=>({...p,x:center.x+dx+scale*((p.x-center.x)*cos-(p.y-center.y)*sin),y:center.y+dy+scale*((p.x-center.x)*sin+(p.y-center.y)*cos)});
   return strokes.map(s=>({...s,width:s.width*scale,points:s.points.map(point),erasures:s.erasures?.map(e=>({radius:e.radius*scale,points:e.points.map(point)}))}));
 }
+
+/** A wider release threshold prevents jitter at the edge of cardinal-angle snapping. */
+export function snapRotation(angle:number,previous:number|null=null):{angle:number;locked:number|null}{
+  const enter=4*Math.PI/180,leave=7*Math.PI/180;
+  if(previous!==null&&Math.abs(angle-previous)<=leave)return {angle:previous,locked:previous};
+  const target=Math.round(angle/(Math.PI/2))*Math.PI/2;
+  return Math.abs(angle-target)<=enter?{angle:target,locked:target}:{angle,locked:null};
+}

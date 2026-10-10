@@ -54,10 +54,8 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]].filter(([n
  async function dragHandle(handle,dx,dy){const b=await page.locator(`[data-lasso-handle=${handle}]`).boundingBox();await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();await page.mouse.move(b.x+b.width/2+dx,b.y+b.height/2+dy,{steps:5});await page.mouse.up();}
  function bounds(s){const points=s.slice(0,2).flatMap(s=>s.points.map(p=>({x:p.x,y:p.y,w:s.width/2})));return {l:Math.min(...points.map(p=>p.x-p.w)),r:Math.max(...points.map(p=>p.x+p.w)),t:Math.min(...points.map(p=>p.y-p.w)),b:Math.max(...points.map(p=>p.y+p.w))};}
  for(const [corner,dx,dy]of [['nw',-15,-12],['ne',15,-12],['sw',-15,12],['se',15,12]]){
-   const old=await strokes(),a=bounds(old);await dragHandle(`scale-${corner}`,dx,dy);const changed=await strokes(),b=bounds(changed);assert.ok(changed[0].width>old[0].width);assert.deepEqual(changed.slice(2),before.slice(2));
-   // PDF y is inverted relative to the displayed page.
-   assert.ok(Math.abs((corner.endsWith('w')?a.r:a.l)-(corner.endsWith('w')?b.r:b.l))<.01);
-   assert.ok(Math.abs((corner.startsWith('n')?a.t:a.b)-(corner.startsWith('n')?b.t:b.b))<.01);
+   const old=await strokes(),fa=(await page.locator('.note-ink-lasso-bounds').first().getAttribute('points')).split(' ').map(p=>p.split(',').map(Number));await dragHandle(`scale-${corner}`,dx,dy);const changed=await strokes(),fb=(await page.locator('.note-ink-lasso-bounds').first().getAttribute('points')).split(' ').map(p=>p.split(',').map(Number));assert.ok(changed[0].width>old[0].width);assert.deepEqual(changed.slice(2),before.slice(2));
+   const opposite={nw:2,ne:3,sw:1,se:0}[corner];assert.ok(Math.hypot(fa[opposite][0]-fb[opposite][0],fa[opposite][1]-fb[opposite][1])<.01);
    await page.getByRole('button',{name:'元に戻す',exact:true}).click();
  }
  await dragHandle('scale-se',25,15);await dragHandle('rotate',30,10);
@@ -76,7 +74,7 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]].filter(([n
  // Native right-click pastes centred at the specified page point.
  await page.evaluate(()=>{const h=window.nativeHarness,p=h.point(1,240,100);document.elementFromPoint(p.x,p.y).dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:p.x,clientY:p.y}));});
  await page.getByRole('button',{name:'貼り付け',exact:true}).click();let pasted=await strokes();assert.equal(pasted.length,6);
- const b=bounds(pasted.slice(4));assert.ok(Math.abs((b.l+b.r)/2-240)<.7);assert.ok(Math.abs((b.t+b.b)/2-100)<.7);
+ const pasteCenter=await page.evaluate(()=>window.nativeHarness.session.lasso.frame.center);const vp=await page.evaluate(()=>window.nativeHarness.viewer.getPageView(0).pdfPage.getViewport({scale:1}).transform);assert.ok(Math.abs(pasteCenter.x-(vp[0]*240+vp[2]*100+vp[4]))<.7);assert.ok(Math.abs(pasteCenter.y-(vp[1]*240+vp[3]*100+vp[5]))<.7);
  await page.getByRole('button',{name:'選択した書き込みを削除',exact:true}).click();assert.equal((await strokes()).length,4);
  await page.getByRole('button',{name:'元に戻す',exact:true}).click();assert.equal((await strokes()).length,6);
  // Finger long-press works without a contextmenu event; moving/pinching cancels it.
@@ -116,6 +114,27 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]].filter(([n
  assert.equal(perf.builds,1);assert.ok(perf.frames<=12&&perf.frames>0);assert.equal(perf.commitsDuring,0);assert.equal(perf.commitsAfter,1);assert.ok(perf.stable&&perf.unchanged);
  const corner=await page.locator('.note-ink-lasso-corner').first().evaluate(el=>({target:el.getBoundingClientRect().width,visible:getComputedStyle(el,'::after').width}));assert.equal(corner.target,28);assert.equal(corner.visible,'10px');
  await page.screenshot({path:`${output}/${name}-dense-selection.png`});
+ // Selection excludes erased tails and does not enforce a 44px minimum.
+ await page.evaluate(()=>window.nativeHarness.session.controller.replaceStrokes([{id:'trimmed',pageNumber:1,tool:'highlighter',color:'#ffcc00',width:8,points:[{x:70,y:200,t:0,pressure:.7},{x:300,y:200,t:10,pressure:.7}],erasures:[{radius:20,points:[{x:150,y:200},{x:320,y:200}]}]}]));
+ await gesture([[50,235],[330,235],[330,170],[50,170],[50,235]]);
+ let fitted=await page.evaluate(()=>window.nativeHarness.session.lasso.frame);assert.ok(fitted.width<80&&fitted.width>55,JSON.stringify(fitted));
+ await page.screenshot({path:`${output}/${name}-trimmed-bounds.png`});
+ // Rotate through the cardinal directions, test capture, hold, release and exact commit.
+ const snap=await page.evaluate(async()=>{
+  const l=window.nativeHarness.session.lasso,f=structuredClone(l.frame),handle=document.querySelector('[data-lasso-handle="rotate"]'),root=handle.closest('.page'),rect=root.getBoundingClientRect(),v=window.nativeHarness.viewer.getPageView(0).pdfPage.getViewport({scale:1}),hb=handle.getBoundingClientRect();
+  const center={x:rect.left+f.center.x*rect.width/v.width,y:rect.top+f.center.y*rect.height/v.height},x=hb.x+hb.width/2,y=hb.y+hb.height/2,r=Math.hypot(x-center.x,y-center.y),start=Math.atan2(y-center.y,x-center.x);
+  handle.dispatchEvent(new PointerEvent('pointerdown',{view:window,bubbles:true,cancelable:true,pointerType:'pen',pointerId:441,button:0,buttons:1,clientX:x,clientY:y}));
+  const values=[];for(const degrees of [87,96,99,177,186,189,267,276,279,357,366,369,360]){
+   const a=start+degrees*Math.PI/180;root.dispatchEvent(new PointerEvent('pointermove',{view:window,bubbles:true,cancelable:true,pointerType:'pen',pointerId:441,button:0,buttons:1,clientX:center.x+Math.cos(a)*r,clientY:center.y+Math.sin(a)*r}));await new Promise(r=>requestAnimationFrame(r));values.push(Number(document.querySelector('.note-ink-lasso-overlay').dataset.angle)*180/Math.PI);
+  }
+  root.dispatchEvent(new PointerEvent('pointerup',{view:window,bubbles:true,cancelable:true,pointerType:'pen',pointerId:441,button:0,buttons:0,clientX:x,clientY:y}));return {values,final:l.frame.angle};
+ });
+ const expected=[90,90,99,180,180,189,270,270,279,0,0,9,0];snap.values.forEach((v,i)=>assert.ok(Math.abs(((v-expected[i]+540)%360)-180)<.01,JSON.stringify(snap)));assert.ok(Math.abs(Math.sin(snap.final))<1e-8);
+ await page.evaluate(()=>window.nativeHarness.session.controller.replaceStrokes([{id:'dot',pageNumber:1,tool:'highlighter',color:'#ffcc00',width:2,points:[{x:100,y:200,t:0,pressure:.7}]}]));
+ await gesture([[50,235],[190,235],[190,170],[50,170],[50,235]]);fitted=await page.evaluate(()=>window.nativeHarness.session.lasso.frame);assert.ok(fitted.width<10&&fitted.height<10,JSON.stringify(fitted));
+ await page.screenshot({path:`${output}/${name}-small-bounds.png`});
+ await page.evaluate(()=>window.nativeHarness.session.controller.replaceStrokes([{id:'erased',pageNumber:1,tool:'pen',color:'#000000',width:2,points:[{x:100,y:200,t:0,pressure:.7}],erasures:[{radius:20,points:[{x:100,y:200}]}]}]));
+ await gesture([[50,235],[190,235],[190,170],[50,170],[50,235]]);assert.equal(await page.locator('[data-lasso-handle]').count(),0);
  await page.evaluate(()=>window.nativeHarness.session.close());assert.equal(await page.locator('.note-ink-lasso-overlay').count(),0);assert.deepEqual(errors,[]);
  console.log(JSON.stringify({browser:name,passed:true,fourCorners:true,drag:true,longPressPaste:true,pastePosition:true,outsideTap:true,undo:true,reload:true,perf,errors}));await browser.close();
 }}finally{for(const b of browsers)await b.close();server.close();}
