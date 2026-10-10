@@ -16,8 +16,8 @@ Object.assign(HTMLElement.prototype,{
 });
 export class TFile {constructor(public path:string){} stat={mtime:1};get extension(){return this.path.split('.').pop()!;}}
 export class FileView {
-  app:any;containerEl:HTMLElement;contentEl:HTMLElement;file:any;actions:HTMLElement;
-  constructor(leaf:any){this.app=leaf.app;this.containerEl=create(document.body,'main',{cls:'workspace-leaf-content'});this.actions=create(this.containerEl,'header');this.contentEl=create(this.containerEl,'div',{cls:'view-content'});}
+  app:any;leaf:any;containerEl:HTMLElement;contentEl:HTMLElement;file:any;actions:HTMLElement;
+  constructor(leaf:any){this.leaf=leaf;this.app=leaf.app;this.containerEl=create(document.body,'main',{cls:'workspace-leaf-content'});this.actions=create(this.containerEl,'header',{cls:'view-header'});create(this.actions,'button',{cls:'view-action mod-more-options',text:'…',attr:{'aria-label':'タブのその他の操作'}});this.contentEl=create(this.containerEl,'div',{cls:'view-content'});}
   async setState(state:any){this.file=this.app.vault.getAbstractFileByPath(state.file);}getState(){return{};}onPaneMenu(){}
   addAction(icon:string,title:string,callback:any){const button=create(this.actions,'button',{text:title,attr:{'aria-label':title}});button.addEventListener('click',callback);return button;}
 }
@@ -25,7 +25,25 @@ export class Notice {el:HTMLElement;constructor(message:string,timeout=4000){thi
 export class Menu {addItem(fn:any){fn({setTitle(){return this;},setIcon(){return this;},setDisabled(){return this;},onClick(){return this;}});}addSeparator(){}}
 export class Modal {contentEl=create(document.body,'div');constructor(public app:any){}open(){}close(){this.contentEl.remove();}}
 export class Setting {}
+export class Plugin {manifest={id:"obsidian-lecture-ink"};constructor(public app:any){}}
+export class PluginSettingTab {constructor(public app:any,public plugin:any){}}
 export function normalizePath(path:string){return path.replace(/\\/g,'/');}
-export function setIcon(el:HTMLElement,icon:string){el.dataset.icon=icon;}
+export function setIcon(el:HTMLElement,icon:string){
+ el.dataset.icon=icon;
+ const paths:Record<string,string>={
+  'pencil':'M4 20l4-1L20 7l-3-3L5 16z M14 7l3 3',
+  'highlighter':'M5 16l5 3 10-10-5-5z M5 16l-1 4 4-1',
+  'eraser':'M3 14l9-10 8 8-8 8H8z M7 10l8 8 M12 20h9',
+  'text-select':'M5 4h14 M12 4v16 M8 20h8',
+  'sliders-horizontal':'M3 6h18 M3 12h18 M3 18h18 M7 3v6 M16 9v6 M10 15v6',
+  'undo-2':'M9 4L4 9l5 5 M4 9h10a6 6 0 0 1 0 12',
+  'redo-2':'M15 4l5 5-5 5 M20 9H10a6 6 0 0 0 0 12',
+  'chevron-down':'M6 9l6 6 6-6'
+ };
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','20');svg.setAttribute('height','20');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','2');svg.setAttribute('aria-hidden','true');
+ const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',paths[icon]??'M4 12h16');svg.append(path);el.replaceChildren(svg);
+}
 export const MarkdownRenderer={render:async()=>{}};
 export async function loadPdfJs(){const pdf=await import(/* @vite-ignore */ '/pdfjs/pdf.mjs' as string);pdf.GlobalWorkerOptions.workerSrc='/pdfjs/pdf.worker.mjs';return pdf;}
+
+export const Platform = {isMobileApp:false};

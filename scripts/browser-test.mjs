@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 await mkdir('work/browser',{recursive:true});
 await build({plugins:[pdfAssetsPlugin],entryPoints:['tests/browserHarness.ts'],bundle:true,format:'iife',platform:'browser',target:'es2020',external:['/pdfjs/*'],alias:{obsidian:path.resolve('tests/mockObsidian.ts')},outfile:'work/browser/harness.js'});
-const base=`<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><style>:root{--background-primary:#fff;--background-secondary:#f4f4f4;--text-normal:#222;--text-muted:#666;--interactive-accent:#586b86;--background-modifier-border:#ddd;--icon-color:#444;}body{margin:0;font-family:Arial,sans-serif;}main{height:90vh;display:flex;flex-direction:column;}header{display:flex;}header button{padding:8px;font-size:12px;}.view-content{height:100%;min-height:0;}button{cursor:pointer;}button:focus-visible{outline:2px solid #586b86;}.notice{position:fixed;bottom:12px;background:#333;color:white;padding:16px;z-index:1000;}#exports{display:flex;flex-wrap:wrap;}</style></head><body><section id="exports"></section><script src="/harness.js"></script></body></html>`;
+const base=`<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/styles.css"><style>:root{--background-primary:#fff;--background-secondary:#f4f4f4;--text-normal:#222;--text-muted:#666;--interactive-accent:#586b86;--background-modifier-border:#ddd;--icon-color:#444;}body{margin:0;font-family:Arial,sans-serif;}main{height:90vh;display:flex;flex-direction:column;}header{display:flex;flex-shrink:0;}header button{padding:8px;font-size:12px;}.view-content{height:100%;min-height:0;}button{cursor:pointer;}button:focus-visible{outline:2px solid #586b86;}.notice{position:fixed;bottom:12px;background:#333;color:white;padding:16px;z-index:1000;}#exports{display:flex;flex-wrap:wrap;}</style></head><body><section id="exports"></section><script src="/harness.js"></script></body></html>`;
 const server=createServer(async(req,res)=>{try{
  const url=new URL(req.url,'http://localhost').pathname;
  if(url==='/'){res.end(base);return;}
@@ -24,10 +24,46 @@ try{for(const browserName of ['webkit','chromium']){
  await page.goto(url);
  const rejection=await page.evaluate(()=>window.harness.rejectedSidecar());
  assert.ok(rejection.engine&&rejection.preserved&&rejection.corruptPreserved);assert.equal(rejection.tiles,0);assert.match(rejection.message,/大きすぎる/);
+ const rendering=await page.evaluate(()=>window.harness.renderingChecks());
+ for(const result of rendering){assert.equal(result.stable,true);assert.ok(result.maxDifference<=5,JSON.stringify(result));}
+ const boundaries=await page.evaluate(()=>window.harness.boundaryChecks());
+ assert.deepEqual(boundaries,{drawn:1,replicas:[1,1],undone:0,redone:1,erased:0,restored:1,reloaded:1,untouched:1});
+ const pinch=await page.evaluate(()=>window.harness.pinchChecks());assert.ok(pinch.active&&pinch.ended&&pinch.saved&&!pinch.paused);assert.equal(pinch.zoom,2);
+ const quickEraser=await page.evaluate(()=>window.harness.quickEraserChecks());
+ for(const [key,value] of Object.entries(quickEraser)){assert.ok(Array.isArray(value)?value.every(Boolean):value,`${browserName} quick eraser ${key}: ${JSON.stringify(quickEraser)}`);}
+ const checks=await page.evaluate(()=>window.harness.interactionChecks());
+ assert.equal(checks.two,2);assert.equal(checks.one,1);assert.equal(checks.zero,0);assert.equal(checks.restored,2);
+ assert.equal(checks.dotPoints,1);assert.equal(checks.palmStrokes,1);assert.equal(checks.cancelled,1);assert.equal(checks.cancelledUndo,0);
+ assert.equal(checks.penDifference,0);assert.equal(checks.erased,0);assert.equal(checks.eraseUndo,2);
+ assert.ok(checks.maxAlpha<=90,JSON.stringify(checks));assert.equal(checks.toggle.tool,'highlighter');assert.equal(checks.toggle.highlighterColor,'#1473aa');assert.equal(checks.toggle.highlighterWidth,19);assert.equal(checks.browse,false);
+ assert.equal(checks.during,0);assert.ok(checks.after>0);assert.ok(checks.rejected&&checks.retained&&checks.retryVisible&&checks.errorCleared);
+ assert.equal(checks.source.type,'pdf');assert.equal(checks.finalSaved,2);assert.equal(checks.detachCalls,0);assert.equal(checks.sibling.state.file,'other.pdf');
+ console.log(browserName,'interactions',JSON.stringify({rendering,checks}));
  await page.evaluate(()=>window.harness.open());await page.evaluate(()=>window.harness.addTestInk());
- await page.locator('button[aria-label="その他の操作"]').click();
- await page.locator('button[aria-label="書き込み入りPDFを保存"]').click();
+ await page.locator('button[aria-label="書き込み入りPDFを書き出す"]').click();
  await page.waitForFunction(()=>window.harness.files.has('講義/第1回-書き込み.pdf'));
+ assert.equal(await page.locator('button[aria-label="その他の操作"]').count(),0);
+ assert.equal(await page.locator('button[aria-label="タブのその他の操作"]').isVisible(),false);
+ await page.locator('button[aria-label="ペン"]').focus();
+ assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'ペン');
+ if(browserName==='chromium'){await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'蛍光ペン');}
+ else await page.locator('button[aria-label="蛍光ペン"]').focus();
+ await page.keyboard.press('Enter');
+ assert.equal(await page.evaluate(()=>window.harness.view.engine.getToolState().tool),'highlighter');
+ assert.equal(await page.locator('button[aria-label="元に戻す"]').isDisabled(),true);
+ const quickButton=page.locator('.mobile-ink-quick-eraser');
+ const box=await quickButton.boundingBox();assert.ok(box&&box.width>=44&&box.height>=44);
+ const point={x:box.x+box.width/2,y:box.y+box.height/2};
+ assert.equal(await page.evaluate(point=>!!document.elementFromPoint(point.x,point.y)?.closest('.mobile-ink-quick-eraser'),point),true);
+ // Check the hit target and send a real browser touch at the button centre.
+ await page.touchscreen.tap(point.x,point.y);assert.equal(await quickButton.getAttribute('data-mode'),'once');
+ await page.touchscreen.tap(point.x,point.y);assert.equal(await quickButton.getAttribute('data-mode'),'idle');
+ await page.mouse.move(point.x,point.y);await page.mouse.down();await page.waitForTimeout(320);
+ assert.equal(await quickButton.getAttribute('data-mode'),'hold');
+ await page.screenshot({path:`work/browser/${browserName}-quick-held.png`});
+ await page.mouse.up();assert.equal(await quickButton.getAttribute('data-mode'),'idle');
+ await quickButton.focus();await page.keyboard.press('Enter');assert.equal(await quickButton.getAttribute('data-mode'),'once');
+ await page.keyboard.press('Escape');assert.equal(await quickButton.getAttribute('data-mode'),'idle');
  await page.screenshot({path:`work/browser/${browserName}-ipad-ui.png`});
  const result=await page.evaluate(()=>window.harness.verifyExport('講義/第1回-書き込み.pdf'));
  assert.equal(result.visuals.length,4);
@@ -35,7 +71,9 @@ try{for(const browserName of ['webkit','chromium']){
  assert.ok(result.visuals[0].notes.includes('ここは試験に出る'));
  await page.evaluate(()=>window.harness.view.containerEl.remove());
  await page.screenshot({path:`work/browser/${browserName}-export-pages.png`,fullPage:true});
+ await page.evaluate(()=>window.harness.view.onClose());
  assert.deepEqual(errors,[]);
+ await writeFile(`work/browser/checks-${browserName}.json`,JSON.stringify({rendering,boundaries,pinch,quickEraser,checks,export:result},null,2));
  const resultBytes=await page.evaluate(()=>Array.from(window.harness.files.get('講義/第1回-書き込み.pdf')));await writeFile(`work/browser/${browserName}-export.pdf`,new Uint8Array(resultBytes));
  console.log(browserName,JSON.stringify(result));
  }finally{await browser.close();}

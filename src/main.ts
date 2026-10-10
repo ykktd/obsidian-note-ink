@@ -15,6 +15,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   store!: StrokeStore;
   settings!: MobileInkAnnotationSettings;
   private defaultPdfOpenPath: string | null = null;
+  private readonly sourceViewLeaves = new WeakMap<WorkspaceLeaf,string>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -50,7 +51,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     });
     this.addCommand({
       id: "export-annotated-pdf",
-      name: "書き込み入りPDFを保存",
+      name: "書き込み入りPDFを書き出す",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(AnnotationView);
         const file = this.app.workspace.getActiveFile();
@@ -81,6 +82,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   }
 
   async openInkForFile(file: TFile, leaf: WorkspaceLeaf = this.app.workspace.getLeaf(true)): Promise<void> {
+    this.sourceViewLeaves.delete(leaf);
     await leaf.setViewState({
       type: VIEW_TYPE_MOBILE_INK,
       active: true,
@@ -92,6 +94,12 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  async openSourceWithoutAnnotation(file:TFile,leaf:WorkspaceLeaf):Promise<void> {
+    this.sourceViewLeaves.set(leaf,file.path);
+    try {await leaf.setViewState({type:file.extension==='pdf' ? 'pdf' : 'markdown',active:true,state:{file:file.path}});}
+    catch(error){this.sourceViewLeaves.delete(leaf);throw error;}
+  }
+
   private async openPdfWithAnnotationByDefaultIfNeeded(file: TFile | null): Promise<void> {
     if (!this.settings.openPdfWithAnnotationByDefault) return;
     if (!(file instanceof TFile) || file.extension !== "pdf") return;
@@ -99,6 +107,9 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
     const leaf = this.app.workspace.activeLeaf;
     if (!leaf) return;
+    const sourceViewPath=this.sourceViewLeaves.get(leaf);
+    if(sourceViewPath===file.path)return;
+    if(sourceViewPath)this.sourceViewLeaves.delete(leaf);
 
     const viewState = leaf.getViewState();
     const state = (viewState.state ?? {}) as { file?: unknown; sourcePath?: unknown };

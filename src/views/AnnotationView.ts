@@ -4,9 +4,11 @@ import { STANDALONE_INK_EXTENSION, VIEW_TYPE_MOBILE_INK } from "../constants";
 import { InkEngine } from "../ink/InkEngine";
 import type { InkController } from "../ink/InkController";
 import { PageInkController, type PageInkDescriptor } from "../ink/PageInkController";
+import { QuickEraserControl } from "../ui/QuickEraserControl";
 import { SaveQueue } from "../ink/SaveQueue";
 import type { AnnotationFile, InkStroke, MarkdownLayoutSnapshot, PdfTextAnnotation, PdfTextAnnotationKind, StandaloneElement, StandalonePage, StandaloneShapeKind, StandaloneStickerKind, StandaloneTemplate } from "../ink/types";
 import { PdfPageNavigatorManager, type PdfPageNavigatorPage } from "../pdf/PdfPageNavigatorManager";
+import { isMobileInkEnvironment } from "../utils/platform";
 import { nextFrame, waitForImages } from "../utils/dom";
 import { BundledCMapReaderFactory, BundledStandardFontDataFactory } from "../pdf/pdfAssetReaders";
 import { assertDimensions, MAX_PDF_PAGE_HEIGHT, MAX_PDF_PAGES } from "../utils/resourceLimits";
@@ -15,11 +17,7 @@ import { saveExportCopy } from "../pdf/saveExportCopy";
 import { stableHash } from "../utils/hash";
 import {
   CSS_PX_PER_MM,
-  INK_DESKTOP_ACTIVE_DISPLAY_SCALE,
   INK_DESKTOP_MAX_DISPLAY_SCALE,
-  INK_MOBILE_ACTIVE_DISPLAY_SCALE,
-  INK_MOBILE_MAX_DISPLAY_SCALE,
-  INK_SHARP_IDLE_MS,
   MARKDOWN_TILED_INK_DESKTOP_MAX_SINGLE_PIXELS,
   MARKDOWN_TILED_INK_DESKTOP_TILE_HEIGHT,
   MARKDOWN_TILED_INK_MOBILE_MAX_SINGLE_PIXELS,
@@ -125,7 +123,12 @@ const MARKDOWN_TEXT_SELECTION_TOUCH_HOLD_MS = 150;
 const MARKDOWN_TEXT_SELECTION_MOVE_TOLERANCE_PX = 12;
 
 export class AnnotationView extends FileView {
+  private quickEraser: QuickEraserControl | null = null;
   private sourcePath = "";
+  private previousWritingTool: "pen" | "highlighter" = "pen";
+  private saveErrorEl: HTMLElement | null = null;
+  private onToolbarOutsideDismiss = (event: Event): void => this.dismissToolbarPopoverFromEvent(event);
+  private returningToSource = false;
   private standalone = false;
   private rootEl: HTMLElement | null = null;
   private scrollEl: HTMLElement | null = null;
@@ -242,6 +245,7 @@ export class AnnotationView extends FileView {
     private readonly plugin: MobileInkAnnotationPlugin
   ) {
     super(leaf);
+    this.containerEl.addClass("note-ink-view");
   }
 
   getViewType(): string {
@@ -477,7 +481,8 @@ export class AnnotationView extends FileView {
 
   async onOpen(): Promise<void> {
     this.ensureTitlebarActions();
-    await this.render();
+    if(!this.rootEl?.isConnected)await this.render();
+    this.refreshToolbarState();
   }
 
   async onClose(): Promise<void> {
@@ -495,6 +500,8 @@ export class AnnotationView extends FileView {
   }
 
   private async flushCurrentWork(): Promise<void> {
+    this.quickEraser?.cancel();
+    this.engine?.flushPendingStrokes();
     if (this.saveQueue) {
       await this.saveQueue.flush();
     }
@@ -503,16 +510,18 @@ export class AnnotationView extends FileView {
   private installToolbarOutsideDismiss(): void {
     if (this.toolbarOutsideDismissInstalled) return;
 
-    document.addEventListener("pointerdown", ((...args: any[]) => (null as any)), true);
-    document.addEventListener("touchstart", ((...args: any[]) => (null as any)), true);
+    document.addEventListener("pointerdown", this.onToolbarOutsideDismiss, true);
+    document.addEventListener("touchstart", this.onToolbarOutsideDismiss, true);
     this.toolbarOutsideDismissInstalled = true;
   }
 
   private removeToolbarOutsideDismiss(): void {
+    this.quickEraser?.destroy();
+    this.quickEraser = null;
     if (!this.toolbarOutsideDismissInstalled) return;
 
-    document.removeEventListener("pointerdown", ((...args: any[]) => (null as any)), true);
-    document.removeEventListener("touchstart", ((...args: any[]) => (null as any)), true);
+    document.removeEventListener("pointerdown", this.onToolbarOutsideDismiss, true);
+    document.removeEventListener("touchstart", this.onToolbarOutsideDismiss, true);
     this.toolbarOutsideDismissInstalled = false;
   }
 
@@ -524,7 +533,7 @@ export class AnnotationView extends FileView {
     if (!this.hasOpenToolbarPopover()) return;
 
     const target = event.target;
-    if (target instanceof Element && target.closest(".mobile-ink-toolbar")) return;
+    if (target instanceof Element && target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser")) return;
     this.closeToolbarPopovers();
   }
 
@@ -533,9 +542,7 @@ export class AnnotationView extends FileView {
     this.rendering = true;
 
     try {
-      if (this.saveQueue) {
-        await this.saveQueue.flush();
-      }
+      await this.flushCurrentWork();
       this.detachPdfLazyRenderer();
       this.detachPdfPageNavigator();
       this.cancelInkDisplayScaleUpdate();
@@ -678,7 +685,7 @@ export class AnnotationView extends FileView {
       this.applyZoom();
       this.installZoomHandlers(scroll);
       this.installSelectionHandlers(selectionLayer);
-      this.saveQueue = new SaveQueue(() => this.saveNow(), 800, () => { new Notice("注釈を保存できませんでした。空き容量と保存先を確認して、もう一度保存してください。", 10000); });
+      this.saveQueue = new SaveQueue(() => this.saveNow(),800,() => this.showSaveError(),() => {this.saveErrorEl?.remove();this.saveErrorEl=null;});
 
       const useTiledInk = !isPdfSource && this.shouldUseTiledInk(pageSize);
       page.classList.toggle("mobile-ink-tiled-ink-mode", useTiledInk);
@@ -691,7 +698,7 @@ export class AnnotationView extends FileView {
             : new InkEngine(live, committed, scroll, {
               initialToolState: this.createInitialInkToolState(),
               canvasMaxDpr: this.isMobileLike() ? 3 : 3.75,
-              canvasMaxPixels: this.isMobileLike() ? 48_000_000 : 96_000_000,
+              canvasMaxPixels: this.isMobileLike() ? 4_000_000 : 8_000_000,
               onInputStart: () => this.enterInkInteractionMode(),
               onInputEnd: () => this.scheduleInkSharpDisplayScaleUpdate(),
               onChange: () => {
@@ -933,24 +940,11 @@ export class AnnotationView extends FileView {
     };
   }
 
-  private ensureTitlebarActions(): void {
-    if (this.titlebarActionsInstalled) return;
-    this.titlebarActionsInstalled = true;
-
-    // Obsidian prepends view actions, so create them in reverse visual order.
-    this.toolbarButtons.zoomIn = this.createTitlebarAction("zoom-in", "拡大", () => this.zoomBy(ZOOM_STEP));
-    this.toolbarButtons.zoomReset = this.createTitlebarAction("rotate-ccw", "ズームをリセット", () => this.setZoom(1));
-    this.toolbarButtons.zoomOut = this.createTitlebarAction("zoom-out", "縮小", () => this.zoomBy(1 / ZOOM_STEP));
-    this.toolbarButtons.redo = this.createTitlebarAction("redo-2", "やり直す", () => {
-      ((...args: any[]) => (null as any))();
-      this.engine?.redo();
-      this.refreshToolbarState();
-    });
-    this.toolbarButtons.undo = this.createTitlebarAction("undo-2", "元に戻す", () => {
-      ((...args: any[]) => (null as any))();
-      this.engine?.undo();
-      this.refreshToolbarState();
-    });
+  private ensureTitlebarActions():void {
+    if(this.titlebarActionsInstalled)return;
+    this.titlebarActionsInstalled=true;
+    this.toolbarButtons.exit=this.createTitlebarAction('arrow-left','元のPDFに戻る',()=>this.exitAnnotationView());
+    this.toolbarButtons.exportPdf=this.createTitlebarAction('file-down','書き込み入りPDFを書き出す',()=>this.exportPdfCopy());
   }
 
   private createTitlebarAction(icon: string, title: string, onClick: (event: MouseEvent) => void | Promise<void>): HTMLElement {
@@ -1013,23 +1007,39 @@ export class AnnotationView extends FileView {
   }
 
   private async saveCurrentAnnotation(): Promise<void> {
-    await this.saveQueue?.flush();
+    await this.flushCurrentWork();
     new Notice("注釈を保存しました。");
   }
 
-  private async exitAnnotationView(): Promise<void> {
-    await this.saveQueue?.flush();
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_MOBILE_INK);
+  private showSaveError():void {
+    if(this.saveErrorEl?.isConnected)return;
+    const box=this.contentEl.createDiv({cls:'note-ink-save-error',attr:{role:'alert'}});
+    box.createSpan({text:'注釈を保存できませんでした。空き容量と保存先を確認してください。'});
+    const retry=box.createEl('button',{text:'再試行',attr:{type:'button'}});
+    retry.addEventListener('click',async()=>{
+      retry.disabled=true;
+      try {await this.flushCurrentWork();}catch { /* The dirty annotation remains available for another retry. */ }
+      finally {retry.disabled=false;}
+    });
+    this.saveErrorEl=box;
   }
-
-  private resetFloatingToolbarButtons(): void {
-    this.toolbarButtons = {
-      undo: this.toolbarButtons.undo,
-      redo: this.toolbarButtons.redo,
-      zoomOut: this.toolbarButtons.zoomOut,
-      zoomReset: this.toolbarButtons.zoomReset,
-      zoomIn: this.toolbarButtons.zoomIn
-    };
+  private async exitAnnotationView():Promise<void> {
+    if(this.returningToSource)return;
+    const file=this.app.vault.getAbstractFileByPath(this.sourcePath);
+    if(!(file instanceof TFile)){new Notice('元のファイルが見つかりません。');return;}
+    this.returningToSource=true;
+    try {
+      this.engine?.setInputEnabled(false);
+      await this.flushCurrentWork();
+      await this.plugin.openSourceWithoutAnnotation(file,this.leaf);
+    } catch(error) {
+      this.syncInkInputEnabled();
+      new Notice('元のファイルに戻れませんでした。注釈画面を保持しています。');
+      throw error;
+    } finally {this.returningToSource=false;}
+  }
+  private resetFloatingToolbarButtons():void {
+    this.toolbarButtons={exportPdf:this.toolbarButtons.exportPdf,exit:this.toolbarButtons.exit};
   }
 
   private createToolbar(root: HTMLElement): void {
@@ -1068,20 +1078,47 @@ export class AnnotationView extends FileView {
     this.toolbarButtons.palette = this.createCurrentColorButton(colorGroup);
 
     const actionGroup = this.createToolbarGroup(dock);
-    this.toolbarButtons.more = this.createIconButton(actionGroup, "more-horizontal", "その他の操作", () => this.setMorePanelOpen(!this.morePanelOpen));
+    this.toolbarButtons.undo=this.createIconButton(actionGroup,"undo-2","元に戻す",()=>this.undoCurrentAnnotation());
+    this.toolbarButtons.redo=this.createIconButton(actionGroup,"redo-2","やり直す",()=>this.redoCurrentAnnotation());
     this.toolbarButtons.collapse = this.createIconButton(actionGroup, "chevron-down", "ツールバーを折りたたむ", () => this.setToolbarCollapsed(true));
 
     this.createColorPalette(toolbar);
     this.createWidthPanel(toolbar);
     this.createEraserPanel(toolbar);
-    this.createMorePanel(toolbar);
+
     this.toolbarButtons.expand = this.createIconButton(toolbar, "pencil", "ツールバーを開く", () => this.setToolbarCollapsed(false));
     this.toolbarButtons.expand.classList.add("mobile-ink-floating-button");
     this.bindToolbarDrag(this.toolbarButtons.expand);
+    this.createQuickEraser(root);
     this.restoreToolbarPosition();
     requestAnimationFrame(() => {
       if (!this.toolbarPosition) return;
       this.setToolbarPosition(this.toolbarPosition.left, this.toolbarPosition.top);
+    });
+  }
+
+  private createQuickEraser(root: HTMLElement): void {
+    const button = root.createEl("button", {
+      cls: "mobile-ink-quick-eraser",
+      attr: { type: "button" }
+    });
+    const icon = button.createSpan({ attr: { "aria-hidden": "true" } });
+    setIcon(icon, "eraser");
+    const label = button.createSpan({ cls: "mobile-ink-quick-eraser-label" });
+    this.quickEraser = new QuickEraserControl(button, label, () => {
+      const controller = this.engine;
+      if (!controller || this.pinchZoomState || this.returningToSource) return null;
+      const tool = controller.getToolState().tool;
+      const returnTool = tool === "pen" || tool === "highlighter" ? tool : this.previousWritingTool;
+      this.setTool("eraser");
+      this.closeToolbarPopovers();
+      return () => {
+        // Finish the erase gesture before changing its tool, even if the Pencil is still down.
+        controller.flushPendingStrokes();
+        controller.setToolState({ tool: returnTool });
+        this.previousWritingTool = returnTool;
+        this.refreshToolbarState();
+      };
     });
   }
 
@@ -1224,103 +1261,6 @@ export class AnnotationView extends FileView {
       });
       this.toolbarButtons.clearAll.classList.add("mobile-ink-danger-option");
     }
-  }
-
-  private createMorePanel(parent: HTMLElement): void {
-    const panel = parent.createDiv({
-      cls: "mobile-ink-toolbar-popover mobile-ink-more-panel",
-      attr: { "aria-label": "その他の操作" }
-    });
-    this.morePanelEl = panel;
-
-    this.toolbarButtons.zoomOut = this.createMoreOption(panel, "zoom-out", "縮小", () => this.zoomBy(1 / ZOOM_STEP));
-    this.toolbarButtons.zoomReset = this.createMoreOption(panel, "rotate-ccw", "ズームをリセット", () => this.setZoom(1));
-    this.toolbarButtons.zoomIn = this.createMoreOption(panel, "zoom-in", "拡大", () => this.zoomBy(ZOOM_STEP));
-    if (false) {
-      this.toolbarButtons.touch = this.createMoreOption(panel, "hand", "指で手書き", () => ((...args: any[]) => (null as any))());
-    }
-    
-    // 独立笔记模板切换按钮
-    if (this.standalone) {
-      this.toolbarButtons.insertImage = this.createMoreOption(panel, "image-plus", "画像を追加", () => {
-        ((...args: any[]) => (null as any))();
-      });
-      this.toolbarButtons.insertShape = this.createMoreOption(panel, "shapes", "図形を追加", (event) => {
-        ((...args: any[]) => (null as any))(event);
-      });
-      this.toolbarButtons.insertSticker = this.createMoreOption(panel, "sticker", "ステッカーを追加", (event) => {
-        this.toggleStickerPanel(event);
-      });
-    }
-
-    if (this.standalone) this.toolbarButtons.template = this.createMoreOption(panel, "layout-template", "用紙を変更", (e) => {
-      if (!this.standalone || !this.annotation) {
-        new Notice("用紙を変更できるのは手書きノートのみです。");
-        return;
-      }
-      
-      const menu = new Menu();
-      const templates: { id: StandaloneTemplate; name: string }[] = [
-        { id: "blank", name: "白紙" },
-        { id: "lined", name: "罫線" },
-        { id: "grid", name: "方眼" },
-        { id: "dotted", name: "ドット" },
-        { id: "cornell", name: "コーネル式ノート" }
-      ];
-      
-      const current = this.annotation.template || "blank";
-      
-      templates.forEach(t => {
-        menu.addItem(item => {
-          item.setTitle(t.name)
-              .setChecked(current === t.id)
-              .onClick(() => {
-                this.annotation!.template = t.id;
-                this.saveQueue?.markDirty();
-                const background = this.containerEl.querySelector(".mobile-ink-standalone-background");
-                if (background) {
-                  background.setAttribute("data-template", t.id);
-                }
-                this.setMorePanelOpen(false);
-              });
-        });
-      });
-      
-      menu.showAtMouseEvent(e as MouseEvent);
-    });
-    if (this.isPdfPath(this.sourcePath)) {
-      this.toolbarButtons.exportPdf = this.createMoreOption(panel, "file-down", "書き込み入りPDFを保存", async () => {
-        await this.exportPdfCopy();
-      });
-    }
-    this.toolbarButtons.save = this.createMoreOption(panel, "save", "保存", async () => {
-      await this.saveQueue?.flush();
-      new Notice("注釈を保存しました。");
-      this.setMorePanelOpen(false);
-    });
-    this.toolbarButtons.exit = this.createMoreOption(panel, "x", "閉じる", async () => {
-      await this.saveQueue?.flush();
-      this.app.workspace.detachLeavesOfType(VIEW_TYPE_MOBILE_INK);
-    });
-  }
-
-  private createMoreOption(parent: HTMLElement, icon: string, label: string, onClick: (event: MouseEvent | TouchEvent) => void | Promise<void>): HTMLButtonElement {
-    const button = parent.createEl("button", {
-      cls: "mobile-ink-more-option",
-      attr: {
-        type: "button",
-        "aria-label": label,
-        title: label
-      }
-    });
-    setIcon(button, icon);
-    button.createSpan({ text: label });
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      Promise.resolve(onClick(event)).catch(error => console.error("Note Ink: action failed", error));
-    });
-    return button;
   }
 
   private createEraserOption(parent: HTMLElement, icon: string, label: string, onClick: () => void | Promise<void>): HTMLButtonElement {
@@ -1711,7 +1651,7 @@ export class AnnotationView extends FileView {
 
   private onZoomWheel = (event: WheelEvent): void => {
     if (!event.ctrlKey && !event.metaKey) return;
-    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav")) return;
+    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav")) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -1723,14 +1663,15 @@ export class AnnotationView extends FileView {
   }
 
   private onZoomTouchStart = (event: TouchEvent): void => {
-    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .modal-container")) return;
-    if (event.touches.length !== 2) return;
+    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .modal-container")) return;
+    if (this.getZoomTouches(event).length !== 2) return;
 
-    const distance = this.getTouchDistance(event.touches);
+    const distance = this.getTouchDistance(this.getZoomTouches(event));
     if (distance <= 0) return;
 
     event.preventDefault();
     event.stopPropagation();
+    this.quickEraser?.cancel();
     this.selectionDrag = null;
     this.markPdfInteractionBusy();
     this.selectionTouchId = null;
@@ -1747,15 +1688,15 @@ export class AnnotationView extends FileView {
 
   private onZoomTouchMove = (event: TouchEvent): void => {
     if (!this.pinchZoomState) {
-      if (event.touches.length === 2) {
+      if (this.getZoomTouches(event).length === 2) {
         this.onZoomTouchStart(event);
       }
       return;
     }
-    if (event.touches.length < 2) return;
+    if (this.getZoomTouches(event).length < 2) return;
 
-    const distance = this.getTouchDistance(event.touches);
-    const center = this.getTouchCenter(event.touches);
+    const distance = this.getTouchDistance(this.getZoomTouches(event));
+    const center = this.getTouchCenter(this.getZoomTouches(event));
     if (distance <= 0 || !center) return;
 
     event.preventDefault();
@@ -1765,29 +1706,33 @@ export class AnnotationView extends FileView {
   };
 
   private onZoomTouchEnd = (event: TouchEvent): void => {
-    if (!this.pinchZoomState || event.touches.length >= 2) return;
+    if (!this.pinchZoomState || this.getZoomTouches(event).length >= 2) return;
 
     event.preventDefault();
     event.stopPropagation();
     this.pinchZoomState = null;
     this.syncInkInputEnabled();
-    this.inkInteractionActive = false;
+    this.scheduleInkSharpDisplayScaleUpdate();
     this.updateInkDisplayScaleNow();
     this.queueVisiblePdfPagesRender();
     this.scheduleSharpPdfBackgroundRender();
   };
 
-  private getTouchDistance(touches: TouchList): number {
-    const first = touches.item(0);
-    const second = touches.item(1);
+  private getZoomTouches(event: TouchEvent): Touch[] {
+    return Array.from(event.touches).filter(touch => !(touch.target instanceof Element && touch.target.closest(".mobile-ink-quick-eraser")));
+  }
+
+  private getTouchDistance(touches: readonly Touch[]): number {
+    const first = touches[0];
+    const second = touches[1];
     if (!first || !second) return 0;
 
     return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
   }
 
-  private getTouchCenter(touches: TouchList): { x: number; y: number } | null {
-    const first = touches.item(0);
-    const second = touches.item(1);
+  private getTouchCenter(touches: readonly Touch[]): { x: number; y: number } | null {
+    const first = touches[0];
+    const second = touches[1];
     if (!first || !second) return null;
 
     return {
@@ -1833,38 +1778,18 @@ export class AnnotationView extends FileView {
     this.pdfPageNavigator.queueUpdate();
   }
 
-  private getInkDisplayScale(): number {
-    const mobile = this.isMobileLike();
-    const maxScale = mobile ? INK_MOBILE_MAX_DISPLAY_SCALE : INK_DESKTOP_MAX_DISPLAY_SCALE;
-    const sharpScale = Math.max(1, Math.min(this.zoom, maxScale));
-    if (!this.inkInteractionActive) return sharpScale;
-
-    const activeScale = mobile ? INK_MOBILE_ACTIVE_DISPLAY_SCALE : INK_DESKTOP_ACTIVE_DISPLAY_SCALE;
-    return Math.min(sharpScale, activeScale);
+  private getInkDisplayScale():number {return Math.max(1,Math.min(this.zoom,this.isMobileLike() ? 3 : INK_DESKTOP_MAX_DISPLAY_SCALE));}
+  private enterInkInteractionMode():void {
+    this.inkInteractionActive=true;
+    this.saveQueue?.setPaused(true);
+    this.markPdfInteractionBusy();
   }
-
-  private enterInkInteractionMode(): void {
-    if (!this.engine) return;
-    if (this.inkSharpTimer !== null) {
-      window.clearTimeout(this.inkSharpTimer);
-      this.inkSharpTimer = null;
-    }
-
-    this.inkInteractionActive = true;
-    this.updateInkDisplayScaleNow();
-  }
-
-  private scheduleInkSharpDisplayScaleUpdate(): void {
-    if (!this.engine) return;
-    if (this.inkSharpTimer !== null) {
-      window.clearTimeout(this.inkSharpTimer);
-    }
-
-    this.inkSharpTimer = window.setTimeout(() => {
-      this.inkSharpTimer = null;
-      this.inkInteractionActive = false;
-      this.updateInkDisplayScaleNow();
-    }, INK_SHARP_IDLE_MS);
+  private scheduleInkSharpDisplayScaleUpdate():void {
+    const inputEnded = this.inkInteractionActive;
+    this.inkInteractionActive=false;
+    this.saveQueue?.setPaused(false);
+    if (inputEnded) this.quickEraser?.inputEnded();
+    this.markPdfInteractionBusy();
   }
 
   private scheduleInkDisplayScaleUpdate(): void {
@@ -2178,14 +2103,14 @@ export class AnnotationView extends FileView {
         return;
       }
       if (this.selectMode) return;
-      if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-object-layer")) return;
+      if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-object-layer")) return;
       if (this.isSelectionContextMenuEvent(event) || this.isCaptureContextMenuEvent(event)) return;
 
       event.preventDefault();
       event.stopPropagation();
     };
     const markInputBusy = (event: PointerEvent) => {
-      if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-object-layer")) return;
+      if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-object-layer")) return;
       if (event.pointerType === "pen" || event.pointerType === "touch" || event.buttons !== 0) {
         this.pdfInteractionBusyUntil = performance.now() + PDF_BACKGROUND_SHARP_IDLE_MS;
       }
@@ -2222,7 +2147,7 @@ export class AnnotationView extends FileView {
     if (!(event.target instanceof Element)) return;
 
     const target = event.target;
-    if (target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
+    if (target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
     if (target.closest(".mobile-ink-pdf-text-annotation, .mobile-ink-pdf-text-note-marker, .mobile-ink-markdown-text-annotation-layer")) return;
     if (!target.closest(".mobile-ink-background, .mobile-ink-pdf-text-layer")) return;
     if (this.pdfTextDragSelection || this.pdfPendingTextSelection) return;
@@ -2244,7 +2169,7 @@ export class AnnotationView extends FileView {
     if (!(event.target instanceof Element)) return false;
 
     const target = event.target;
-    if (target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) {
+    if (target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-selection-menu, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) {
       return false;
     }
     if (target.closest(".mobile-ink-pdf-text-annotation, .mobile-ink-pdf-text-note-marker, .mobile-ink-selection-layer")) {
@@ -2255,7 +2180,7 @@ export class AnnotationView extends FileView {
   }
 
   private onRootPointerDown = (event: PointerEvent): void => {
-    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav")) return;
+    if (event.target instanceof Element && (event.target as HTMLElement)?.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav")) return;
     if (this.standalone && this.selectedStandaloneElementId && event.target instanceof Element && !(event.target as HTMLElement)?.closest(".mobile-ink-object")) {
       ((...args: any[]) => (null as any))();
     }
@@ -2276,7 +2201,7 @@ export class AnnotationView extends FileView {
     if (!(event.target instanceof Element)) return;
 
     const target = event.target;
-    if (target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
+    if (target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
     if (target.closest(".mobile-ink-pdf-text-layer span, .mobile-ink-pdf-text-annotation, .mobile-ink-pdf-text-note-marker, .mobile-ink-background")) return;
 
     this.pdfPageNavigator.setExpanded(false);
@@ -2307,6 +2232,13 @@ export class AnnotationView extends FileView {
   private onRootKeyDown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented) return;
     if (this.isShortcutEditableTarget(event.target)) return;
+
+    if (event.key === "Escape" && this.quickEraser?.active) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.quickEraser.cancel();
+      return;
+    }
 
     if (this.captureMode && event.key === "Escape") {
       event.preventDefault();
@@ -2435,6 +2367,7 @@ export class AnnotationView extends FileView {
   }
 
   private undoCurrentAnnotation(): void {
+    this.quickEraser?.cancel();
     if (!this.engine) return;
 
     ((...args: any[]) => (null as any))();
@@ -2443,6 +2376,7 @@ export class AnnotationView extends FileView {
   }
 
   private redoCurrentAnnotation(): void {
+    this.quickEraser?.cancel();
     if (!this.engine) return;
 
     ((...args: any[]) => (null as any))();
@@ -3836,7 +3770,7 @@ export class AnnotationView extends FileView {
       return;
     }
     if (this.pdfSharpRenderRunning) return;
-    if (performance.now() < this.pdfInteractionBusyUntil) {
+    if (this.engine?.isInputActive() || this.pinchZoomState || performance.now() < this.pdfInteractionBusyUntil) {
       this.scheduleSharpPdfBackgroundRender();
       return;
     }
@@ -4627,7 +4561,7 @@ export class AnnotationView extends FileView {
   }
 
   private isMobileLike(): boolean {
-    return window.innerWidth <= 820 || window.matchMedia?.("(pointer: coarse)").matches === true;
+    return isMobileInkEnvironment();
   }
 
   private yieldToBrowser(): Promise<void> {
@@ -4823,6 +4757,7 @@ export class AnnotationView extends FileView {
   }
 
   private setSelectMode(enabled: boolean): void {
+    if (enabled) this.quickEraser?.cancel();
     if (enabled && this.strokeSelectMode) {
       ((...args: any[]) => (null as any))(false);
     }
@@ -5002,37 +4937,22 @@ export class AnnotationView extends FileView {
     this.refreshToolbarState();
   }
 
-  private activateEraser(): void {
-    const state = this.engine?.getToolState();
-    if (!this.browseMode && !this.selectMode && !this.strokeSelectMode && !this.captureMode && state?.tool === "eraser") {
-      this.setBrowseMode(true);
-      return;
-    }
-
-    if (this.selectMode) {
-      this.setSelectMode(false);
-    }
-    if (this.strokeSelectMode) {
-      ((...args: any[]) => (null as any))(false);
-    }
-    if (this.captureMode) {
-      ((...args: any[]) => (null as any))(false);
-    }
-    this.leaveBrowseMode();
-    this.syncInkInputEnabled();
-    this.engine?.setToolState({ tool: "eraser" });
-    this.setEraserPanelOpen(!this.eraserPanelOpen);
-    this.refreshToolbarState();
+  private activateEraser():void {
+    this.quickEraser?.cancel();
+    const state=this.engine?.getToolState();
+    if(state?.tool==='eraser'){this.setTool(this.previousWritingTool);return;}
+    if(state?.tool==='pen' || state?.tool==='highlighter')this.previousWritingTool=state.tool;
+    if(this.selectMode)this.setSelectMode(false);
+    this.leaveBrowseMode();this.syncInkInputEnabled();
+    this.engine?.flushPendingStrokes();
+    this.engine?.setToolState({tool:'eraser'});
+    this.closeToolbarPopovers();this.refreshToolbarState();
   }
 
   private setTool(tool: VisibleInkTool, options: { allowToggleBrowse?: boolean } = {}): void {
-    const allowToggleBrowse = options.allowToggleBrowse !== false;
-    const state = this.engine?.getToolState();
-    if (allowToggleBrowse && !this.browseMode && !this.selectMode && !this.strokeSelectMode && !this.captureMode && state?.tool === tool) {
-      this.setBrowseMode(true);
-      return;
-    }
-
+    this.quickEraser?.cancel();
+    this.engine?.flushPendingStrokes();
+    if(tool==='pen' || tool==='highlighter')this.previousWritingTool=tool;
     if (this.selectMode) {
       this.setSelectMode(false);
     }
@@ -5051,6 +4971,7 @@ export class AnnotationView extends FileView {
   }
 
   private setInkColor(color: string): void {
+    this.quickEraser?.cancel();
     const state = this.engine?.getToolState();
     if (state?.tool === "highlighter") {
       this.engine?.setToolState({ highlighterColor: color });
@@ -5080,6 +5001,10 @@ export class AnnotationView extends FileView {
   private refreshToolbarState(): void {
     const state = this.engine?.getToolState();
     if (!state) return;
+    this.toolbarButtons.undo?.toggleAttribute('disabled',!this.engine?.canUndo());
+    this.toolbarButtons.redo?.toggleAttribute('disabled',!this.engine?.canRedo());
+    this.toolbarButtons.exportPdf?.toggleAttribute('hidden',!this.isPdfPath(this.sourcePath));
+    this.toolbarButtons.exit?.setAttribute('aria-label',this.isPdfPath(this.sourcePath) ? '元のPDFに戻る' : '元のファイルに戻る');
 
     this.setButtonActive(this.toolbarButtons.pen, !this.browseMode && !this.selectMode && !this.strokeSelectMode && !this.captureMode && state.tool === "pen");
     this.setButtonActive(this.toolbarButtons.highlighter, !this.browseMode && !this.selectMode && !this.strokeSelectMode && !this.captureMode && state.tool === "highlighter");
@@ -6660,7 +6585,7 @@ svg { overflow: visible !important; }
     if (["script", "style", "svg", "canvas", "button", "input", "textarea", "select"].includes(tagName)) {
       return true;
     }
-    return !!element.closest(".mobile-ink-toolbar, .mobile-ink-selection-layer, .mobile-ink-pdf-strokes, mjx-assistive-mml, mjx-container, .MathJax, .math, .math-block, .math-inline, .block-language-math, .katex, .katex-display");
+    return !!element.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-selection-layer, .mobile-ink-pdf-strokes, mjx-assistive-mml, mjx-container, .MathJax, .math, .math-block, .math-inline, .block-language-math, .katex, .katex-display");
   }
 
   private getCanvasFont(style: CSSStyleDeclaration): string {
@@ -7660,7 +7585,7 @@ svg { overflow: visible !important; }
     if (this.activePdfTextTouchId !== null || this.pdfTextDragSelection || this.pdfPendingTextSelection) return;
     if (event.button !== 0 && event.pointerType === "mouse") return;
     if (!(event.target instanceof Element)) return;
-    if (event.target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
+    if (event.target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
     if (event.target.closest(".mobile-ink-pdf-text-annotation, .mobile-ink-pdf-text-note-marker")) return;
 
     const entry = this.getPdfEntryFromPointerEvent(event);
@@ -7689,7 +7614,7 @@ svg { overflow: visible !important; }
 
   private onPdfTextSelectionFinished = (event: Event): void => {
     if (!this.selectMode || this.standalone) return;
-    if (event.target instanceof Element && event.target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .mobile-ink-pdf-text-annotation-layer, .mobile-ink-markdown-text-annotation-layer")) return;
+    if (event.target instanceof Element && event.target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .mobile-ink-pdf-text-annotation-layer, .mobile-ink-markdown-text-annotation-layer")) return;
 
     this.schedulePdfTextSelectionRefresh();
   };
@@ -7784,7 +7709,7 @@ svg { overflow: visible !important; }
     if (!this.selectMode || !this.isPdfPath(this.sourcePath)) return;
     if (this.activePdfTextTouchId !== null || this.pdfTextDragSelection || this.pdfPendingTextSelection) return;
     if (!(event.target instanceof Element)) return;
-    if (event.target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
+    if (event.target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav, .mobile-ink-pdf-text-menu, .mobile-ink-pdf-annotation-menu, .modal-container")) return;
     if (event.target.closest(".mobile-ink-pdf-text-annotation, .mobile-ink-pdf-text-note-marker")) return;
 
     const touch = event.changedTouches.item(0);

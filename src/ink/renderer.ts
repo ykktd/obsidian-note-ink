@@ -18,7 +18,7 @@ export function setupCanvas(
   const displayScale = Number.isFinite(options.displayScale) && options.displayScale && options.displayScale > 0
     ? options.displayScale : 1;
   
-  const targetDpr = baseDpr * displayScale;
+  const targetDpr = Math.min(baseDpr * displayScale, options.maxDpr ?? Number.POSITIVE_INFINITY);
   const pixelCap = Number.isFinite(options.maxPixels) && options.maxPixels && options.maxPixels > 0
     ? options.maxPixels : Number.POSITIVE_INFINITY;
     
@@ -27,13 +27,13 @@ export function setupCanvas(
   
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
-  canvas.width = Math.max(1, Math.ceil(width * dpr));
-  canvas.height = Math.max(1, Math.ceil(height * dpr));
+  canvas.width = Math.max(1, Math.floor(width * dpr));
+  canvas.height = Math.max(1, Math.floor(height * dpr));
   
   const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
   if (!ctx) throw new Error("Unable to create 2D canvas context");
   
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   return ctx;
@@ -47,153 +47,82 @@ export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height
   ctx.clearRect(0, 0, width, height);
 }
 
-// ---------------------------------------------------------------------------
-// Width Computation (Causal & Stable)
-// ---------------------------------------------------------------------------
-
-function computeWidths(points: InkPoint[], base: number): Float32Array {
-  const n = points.length;
-  const widths = new Float32Array(n);
-  let prevW = base * 0.5;
-
-  for (let i = 0; i < n; i++) {
-    const p = points[i];
-    const next = i < n - 1 ? points[i + 1] : null;
-
-    // Realistic pressure mapping (0.4x to 1.2x)
-    // Relies on true hardware pressure. When pen is lifted, pressure naturally drops.
-    const pr = Math.max(0, Math.min(1.0, p.pressure));
-    const pFactor = 0.4 + pr * 0.8;
-
-    // Velocity mapping (fast strokes become slightly thinner)
-    let vFactor = 1.0;
-    if (next) {
-      const dx = next.x - p.x;
-      const dy = next.y - p.y;
-      const dt = Math.max(1, next.t - p.t);
-      const speed = Math.hypot(dx, dy) / dt;
-      vFactor = Math.max(0.8, 1.0 - speed * 0.015);
-    }
-
-    let rawW = base * pFactor * vFactor;
-
-    // Immediate start taper to avoid "blob" at the very first touch.
-    // This is fixed and causal, so it never shifts visually.
-    if (i < 3) {
-      rawW *= 0.6 + 0.4 * (i / 2);
-    }
-
-    // Causal Forward EMA: width at point `i` ONLY depends on points `0..i`.
-    // This guarantees ZERO visual snapping/optimization when the stroke finishes.
-    widths[i] = i === 0 ? rawW : 0.6 * rawW + 0.4 * prevW;
-    prevW = widths[i];
+// Widths depend only on earlier samples, so streaming and full redraw agree.
+const widthCache = new WeakMap<InkStroke, { base: number; points: InkPoint[]; widths: number[] }>();
+export function strokeWidths(stroke: InkStroke): readonly number[] {
+  let cache = widthCache.get(stroke);
+  if (!cache || cache.base !== stroke.width || cache.points !== stroke.points || cache.widths.length > stroke.points.length) {
+    cache = {base:stroke.width, points:stroke.points, widths:[]}; widthCache.set(stroke,cache);
   }
-  
+  const widths=cache.widths;
+  for(let i=widths.length;i<stroke.points.length;i++) {
+    const p=stroke.points[i], prev=stroke.points[i-1];
+    const speed=prev ? Math.hypot(p.x-prev.x,p.y-prev.y)/Math.max(1,p.t-prev.t) : 0;
+    let raw=stroke.width*(.4+Math.max(0,Math.min(1,p.pressure))*.8)*Math.max(.8,1-speed*.015);
+    if(i<3)raw*=.6+.4*(i/2);
+    widths.push(i===0 ? raw : .6*raw+.4*widths[i-1]);
+  }
   return widths;
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
+function midpoint(a: InkPoint,b: InkPoint): {x:number;y:number} { return {x:(a.x+b.x)/2,y:(a.y+b.y)/2}; }
+function style(ctx:CanvasRenderingContext2D,stroke:InkStroke,opaque=false): void {
+  ctx.strokeStyle=stroke.color; ctx.fillStyle=stroke.color; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.globalAlpha=stroke.tool==='highlighter' && !opaque ? .35 : 1;
+  ctx.globalCompositeOperation=stroke.tool==='highlighter' && !opaque ? 'multiply' : 'source-over';
+}
+function curve(ctx:CanvasRenderingContext2D,points:InkPoint[],i:number): void {
+  const from=i===0 ? points[0] : midpoint(points[i-1],points[i]);
+  const to=midpoint(points[i],points[i+1]);
+  ctx.moveTo(from.x,from.y);ctx.quadraticCurveTo(points[i].x,points[i].y,to.x,to.y);
+}
 
-function drawPen(ctx: CanvasRenderingContext2D, stroke: InkStroke, previousPointCount: number): void {
-  const points = stroke.points;
-  const n = points.length;
-  if (n === 0 || n <= previousPointCount) return;
-
-  ctx.save();
-  ctx.globalCompositeOperation = "source-over";
-  ctx.strokeStyle = stroke.color;
-  ctx.fillStyle = stroke.color;
-  ctx.globalAlpha = 1;
-  
-  // lineCap = "round" is the secret to gapless, robust ink. 
-  // It effectively draws a perfect capsule between points.
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  // Widths are strictly deterministic and causal.
-  const widths = computeWidths(points, stroke.width);
-
-  if (n === 1) {
-    if (previousPointCount === 0) {
-      ctx.beginPath();
-      ctx.arc(points[0].x, points[0].y, widths[0] / 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-    return;
+/** Draw only stable midpoint segments; the final half segment is kept off the committed layer. */
+export function drawStrokeSegment(ctx:CanvasRenderingContext2D,stroke:InkStroke,previousPointCount:number,opaque=false):void {
+  if(stroke.points.length<2 || stroke.points.length<=previousPointCount)return;
+  ctx.save();style(ctx,stroke,opaque);
+  const widths=stroke.tool==='pen' ? strokeWidths(stroke) : [];
+  for(let i=Math.max(0,previousPointCount-1);i<stroke.points.length-1;i++) {
+    ctx.beginPath();curve(ctx,stroke.points,i);
+    ctx.lineWidth=stroke.tool==='highlighter' ? stroke.width : widths[i];ctx.stroke();
   }
-
-  // Draw new segments individually.
-  // Overlapping opaque round-capped strokes perfectly merge without gaps.
-  const startIndex = Math.max(0, previousPointCount - 1);
-  for (let i = startIndex; i < n - 1; i++) {
-    ctx.beginPath();
-    ctx.moveTo(points[i].x, points[i].y);
-    ctx.lineTo(points[i + 1].x, points[i + 1].y);
-    ctx.lineWidth = (widths[i] + widths[i + 1]) / 2;
-    ctx.stroke();
-  }
-
   ctx.restore();
 }
 
-function drawHighlighter(ctx: CanvasRenderingContext2D, stroke: InkStroke, previousPointCount: number): void {
-  const pts = stroke.points;
-  if (pts.length === 0 || pts.length <= previousPointCount) return;
-
-  ctx.save();
-  // Multiply blending mimics real highlighters
-  ctx.globalCompositeOperation = "multiply";
-  ctx.strokeStyle = stroke.color;
-  ctx.lineWidth = stroke.width;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.globalAlpha = 0.35;
-
-  // Highlighter uses a single continuous path to prevent opacity compounding at joints
+export function drawStrokeTail(ctx:CanvasRenderingContext2D,stroke:InkStroke,opaque=false):void {
+  const p=stroke.points,n=p.length;if(!n)return;
+  ctx.save();style(ctx,stroke,opaque);
+  const width=stroke.tool==='highlighter' ? stroke.width : strokeWidths(stroke)[n-1];
   ctx.beginPath();
-  const startIndex = Math.max(0, previousPointCount - 1);
-  ctx.moveTo(pts[startIndex].x, pts[startIndex].y);
-  
-  for (let i = startIndex + 1; i < pts.length; i++) {
-    ctx.lineTo(pts[i].x, pts[i].y);
-  }
-  
-  ctx.stroke();
+  if(n===1) {ctx.arc(p[0].x,p[0].y,width/2,0,Math.PI*2);ctx.fill();}
+  else {const from=midpoint(p[n-2],p[n-1]);ctx.moveTo(from.x,from.y);ctx.lineTo(p[n-1].x,p[n-1].y);ctx.lineWidth=width;ctx.stroke();}
   ctx.restore();
 }
 
-export function drawStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke): void {
-  if (stroke.tool === "highlighter") {
-    drawHighlighter(ctx, stroke, 0);
-  } else {
-    drawPen(ctx, stroke, 0);
+export function drawStroke(ctx:CanvasRenderingContext2D,stroke:InkStroke):void {
+  if(stroke.tool!=='highlighter') {drawStrokeSegment(ctx,stroke,0);drawStrokeTail(ctx,stroke);return;}
+  if(!stroke.points.length)return;
+  // Use the same opaque segment mask for live ink and export. Apply translucency once,
+  // including at self-intersections and segment joins.
+  const m=ctx.getTransform(),pad=stroke.width+2;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const p of stroke.points)for(const dx of [-pad,pad])for(const dy of [-pad,pad]) {
+    const x=m.a*(p.x+dx)+m.c*(p.y+dy)+m.e,y=m.b*(p.x+dx)+m.d*(p.y+dy)+m.f;
+    minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
   }
-}
+  const left=Math.max(0,Math.floor(minX)),top=Math.max(0,Math.floor(minY));
+  const right=Math.min(ctx.canvas.width,Math.ceil(maxX)),bottom=Math.min(ctx.canvas.height,Math.ceil(maxY));
+  if(right<=left || bottom<=top)return;
+  const mask=document.createElement('canvas');mask.width=right-left;mask.height=bottom-top;
+  try {
+    const mc=mask.getContext('2d');if(!mc)throw new Error('Unable to create highlighter mask');
+    mc.setTransform(m.a,m.b,m.c,m.d,m.e-left,m.f-top);
+    drawStrokeSegment(mc,stroke,0,true);drawStrokeTail(mc,stroke,true);
+    ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=.35;ctx.globalCompositeOperation='multiply';ctx.drawImage(mask,left,top);ctx.restore();
+  } finally {mask.width=mask.height=0;}
 
-export function drawStrokeSegment(
-  ctx: CanvasRenderingContext2D,
-  stroke: InkStroke,
-  previousPointCount: number
-): void {
-  if (stroke.tool === "highlighter") {
-    drawHighlighter(ctx, stroke, previousPointCount);
-  } else {
-    drawPen(ctx, stroke, previousPointCount);
-  }
 }
-
-export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: InkStroke[]): void {
-  for (const stroke of strokes) {
-    drawStroke(ctx, stroke);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Hit Testing Utilities
-// ---------------------------------------------------------------------------
+export function drawStrokes(ctx:CanvasRenderingContext2D,strokes:readonly InkStroke[]):void {for(const s of strokes)drawStroke(ctx,s);}
 
 export function distanceSquared(a: InkPoint, b: InkPoint): number {
   const dx = a.x - b.x;

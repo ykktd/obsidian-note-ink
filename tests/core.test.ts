@@ -63,3 +63,39 @@ test('reject malicious sidecar geometry before proportional DOM allocation',()=>
   assert.throws(()=>assertDimensions(960,16001,MAX_PDF_PAGE_HEIGHT));
   assert.doesNotThrow(()=>assertDimensions(960,160000));
 });
+
+import {StrokeHistory,strokeChange,applyStrokeChange} from '../src/ink/StrokeHistory';
+import type {InkStroke} from '../src/ink/types';
+const line=(id:string,x=0):InkStroke=>({id,tool:'pen',color:'#111111',width:2,points:[{x,y:10,t:1,pressure:.7}]});
+test('history keeps only changed strokes and restores deletion order',()=>{
+  const before=Array.from({length:5000},(_,i)=>line(String(i))),added=line('new');
+  const change=strokeChange(before,[...before,added]);
+  assert.equal(change.removed.length,0);assert.equal(change.added.length,1);assert.equal(change.added[0].stroke,added);
+  const h=new StrokeHistory();h.record(change);assert.ok(h.canUndo&&!h.canRedo);
+  const without=before.filter((_,i)=>i!==2&&i!==4000),erase=strokeChange(before,without);
+  assert.equal(erase.removed.length,2);assert.equal(erase.added.length,0);
+  assert.deepEqual(applyStrokeChange(without,erase,false),before);
+  assert.deepEqual(applyStrokeChange(before,erase),without);
+  const undone=h.undo()!;assert.equal(applyStrokeChange([...before,added],undone,false).length,5000);assert.ok(!h.canUndo&&h.canRedo);
+  h.record(strokeChange(before,[...before,line('other')]));assert.equal(h.canRedo,false);
+});
+test('history supports changed geometry, reordering, and bounded depth',()=>{
+  const a=line('a'),b=line('b'),changed=line('a',20);
+  const edit=strokeChange([a,b],[changed,b]);assert.equal(edit.added.length,1);assert.equal(edit.removed.length,1);
+  assert.deepEqual(applyStrokeChange([changed,b],edit,false),[a,b]);
+  const reordered=strokeChange([a,b],[b,a]);assert.deepEqual(applyStrokeChange([a,b],reordered),[b,a]);
+  const h=new StrokeHistory();for(let i=0;i<50;i++)h.record({removed:[],added:[{index:i,stroke:line(String(i))}]});
+  let count=0;while(h.undo())count++;assert.equal(count,40);
+});
+test('autosave pauses during input, resumes, and explicit flush includes pending edits',async()=>{
+  let calls=0;const q=new SaveQueue(async()=>{calls++;},5);
+  q.markDirty();q.setPaused(true);await new Promise(r=>setTimeout(r,15));assert.equal(calls,0);
+  q.setPaused(false);await new Promise(r=>setTimeout(r,15));assert.equal(calls,1);
+  q.setPaused(true);q.markDirty();await q.flush();assert.equal(calls,2);
+});
+test('a paused autosave does not start another write after an in-flight save',async()=>{
+  let release!:()=>void,calls=0;const gate=new Promise<void>(r=>release=r);
+  const q=new SaveQueue(async()=>{calls++;if(calls===1)await gate;},10000);
+  q.markDirty();const saving=q.flush(false);await Promise.resolve();q.setPaused(true);q.markDirty();release();await saving;
+  assert.equal(calls,1);await q.flush();assert.equal(calls,2);
+});

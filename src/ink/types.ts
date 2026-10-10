@@ -154,6 +154,8 @@ export type InkToolState = {
 };
 
 export type InkEngineOptions = {
+  /** PageInkController owns history for tiled views. */
+  externalHistory?: boolean;
   onChange: () => void;
   onStrokeCommit?: (stroke: InkStroke) => void;
   onInputStart?: () => void;

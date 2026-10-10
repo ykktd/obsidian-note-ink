@@ -11,6 +11,9 @@ export interface InkController {
   setToolState(patch: Partial<InkToolState>): void;
   getToolState(): InkToolState;
   setInputEnabled(enabled: boolean): void;
+  canUndo(): boolean;
+  canRedo(): boolean;
+  isInputActive(): boolean;
   undo(): void;
   redo(): void;
   clear(): void;

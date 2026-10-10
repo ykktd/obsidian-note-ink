@@ -1,4 +1,5 @@
-import { distancePointToSegmentSquared, distanceSquared, drawStroke, drawStrokeSegment, drawStrokes, setupCanvas } from "./renderer";
+import { distancePointToSegmentSquared, distanceSquared, drawStroke, drawStrokeSegment, drawStrokeTail, drawStrokes, setupCanvas } from "./renderer";
+import { StrokeHistory, strokeChange, applyStrokeChange } from "./StrokeHistory";
 import { InkEngineOptions, InkPoint, InkStroke, InkToolState } from "./types";
 
 const DEFAULT_TOOL_STATE: InkToolState = {
@@ -13,13 +14,11 @@ const DEFAULT_TOOL_STATE: InkToolState = {
 
 const MIN_POINT_DISTANCE_SQ = 0.35 * 0.35;
 const MAX_POINT_GAP_MS = 120;
-const COMMIT_IDLE_MS = 300;
 const CANCEL_GRACE_MS = 400;
 const TOUCH_POINTER_SUPPRESSION_MS = 700;
 const PEN_TOUCH_REJECTION_MS = 1200;
 const MAX_PREDICTED_POINTS = 6;
 const MAX_PREDICTED_EVENT_TIME_AHEAD_MS = 90;
-const HISTORY_STACK_LIMIT = 40;
 
 type CanvasPointMapping = {
   left: number;
@@ -34,8 +33,12 @@ export class InkEngine {
   private width = 1;
   private height = 1;
   private strokes: InkStroke[] = [];
-  private undoStack: InkStroke[][] = [];
-  private redoStack: InkStroke[][] = [];
+  private history = new StrokeHistory();
+  private eraserBefore: readonly InkStroke[] | null = null;
+  private queuedStroke: InkStroke | null = null;
+  private renderedPointCounts = new WeakMap<InkStroke,number>();
+  private pendingPredictionEvent: PointerEvent | null = null;
+  private liveTailBounds: {x:number;y:number;width:number;height:number} | null = null;
   private activeStroke: InkStroke | null = null;
   private activePointerId: number | null = null;
   private activeTouchId: number | null = null;
@@ -44,12 +47,8 @@ export class InkEngine {
   private lastPanClientY = 0;
   private liveRenderRaf: number | null = null;
   private committedRenderRaf: number | null = null;
-  private pendingCommitTimer: number | null = null;
   private cancelGraceTimer: number | null = null;
-  private liveCanvasDirty = false;
   private predictedStrokeRendered = false;
-  private pendingCommittedStrokes: InkStroke[] = [];
-  private directlyRenderedStrokeIds = new Set<string>();
   private suppressTouchPointerUntil = 0;
   private suppressTouchPanUntil = 0;
   private debugMoveCounter = 0;
@@ -87,7 +86,6 @@ export class InkEngine {
     this.displayScale = next;
     this.committedCtx = this.setupInkCanvas(this.committedCanvas, this.displayScale);
     this.liveCtx = this.setupInkCanvas(this.liveCanvas, this.displayScale);
-    this.liveCanvasDirty = true;
     this.renderCommittedNow();
     this.renderLiveNow();
   }
@@ -119,27 +117,23 @@ export class InkEngine {
     if (this.liveRenderRaf !== null) cancelAnimationFrame(this.liveRenderRaf);
     if (this.committedRenderRaf !== null) cancelAnimationFrame(this.committedRenderRaf);
     this.clearCancelGraceTimer();
-    this.flushPendingCommits();
+    this.finishInterruptedInput();
   }
 
   loadStrokes(strokes: InkStroke[]): void {
     this.strokes = cloneStrokes(strokes);
-    this.undoStack = [];
-    this.redoStack = [];
+    this.history.reset();
     this.renderCommittedNow();
   }
 
   replaceStrokes(strokes: InkStroke[], notify = true, undoSnapshot?: InkStroke[]): void {
     this.clearCancelGraceTimer();
     this.finishInterruptedInput();
-    this.flushPendingCommits();
     const nextStrokes = cloneStrokes(strokes);
     if (notify) {
-      this.recordUndoSnapshot(undoSnapshot ?? this.strokes, nextStrokes);
+      if(!this.options.externalHistory)this.history.record(strokeChange(undoSnapshot ?? this.strokes,nextStrokes));
     }
     this.strokes = nextStrokes;
-    this.pendingCommittedStrokes = [];
-    this.directlyRenderedStrokeIds.clear();
     this.activeStroke = null;
     this.renderCommittedNow();
     this.renderLiveNow();
@@ -153,8 +147,20 @@ export class InkEngine {
   }
 
   flushPendingStrokes(): void {
-    this.flushPendingCommits();
+    this.finishInterruptedInput();
   }
+
+  /** Borrow immutable committed data; callers must not mutate it. */
+  getStrokeRefs(): readonly InkStroke[] { return this.strokes; }
+  canUndo(): boolean { return this.history.canUndo; }
+  canRedo(): boolean { return this.history.canRedo; }
+  isInputActive(): boolean { return this.activeStroke !== null || this.activePointerId !== null || this.activeTouchId !== null; }
+  setCanvasPixelBudget(pixels:number): void {
+    if(this.options.canvasMaxPixels === pixels)return;
+    this.options.canvasMaxPixels=pixels;
+    this.resize(this.width,this.height);
+  }
+
 
   setToolState(patch: Partial<InkToolState>): void {
     this.toolState = { ...this.toolState, ...patch };
@@ -170,58 +176,24 @@ export class InkEngine {
     if (!enabled) {
       this.clearCancelGraceTimer();
       this.finishInterruptedInput();
-      this.flushPendingCommits();
-    }
+      }
 
     this.inputEnabled = enabled;
   }
 
   undo(): void {
-    this.flushPendingCommits();
-
-    const previous = this.undoStack.pop();
-    if (!previous) return;
-
-    this.redoStack.push(cloneStrokes(this.strokes));
-    this.trimHistoryStacks();
-    this.strokes = cloneStrokes(previous);
-    this.pendingCommittedStrokes = [];
-    this.directlyRenderedStrokeIds.clear();
-    this.activeStroke = null;
-    this.renderCommittedNow();
-    this.renderLiveNow();
-    this.options.onChange();
+    this.flushPendingStrokes();
+    const change=this.history.undo();if(!change)return;
+    this.strokes=applyStrokeChange(this.strokes,change,false);
+    this.renderCommittedNow();this.options.onChange();
   }
-
   redo(): void {
-    this.flushPendingCommits();
-
-    const next = this.redoStack.pop();
-    if (!next) return;
-
-    this.undoStack.push(cloneStrokes(this.strokes));
-    this.trimHistoryStacks();
-    this.strokes = cloneStrokes(next);
-    this.pendingCommittedStrokes = [];
-    this.directlyRenderedStrokeIds.clear();
-    this.activeStroke = null;
-    this.renderCommittedNow();
-    this.renderLiveNow();
-    this.options.onChange();
+    this.flushPendingStrokes();
+    const change=this.history.redo();if(!change)return;
+    this.strokes=applyStrokeChange(this.strokes,change);
+    this.renderCommittedNow();this.options.onChange();
   }
-
-  clear(): void {
-    this.clearPredictedStroke();
-    if (this.strokes.length > 0) {
-      this.recordUndoSnapshot(this.strokes, []);
-    }
-    this.strokes = [];
-    this.pendingCommittedStrokes = [];
-    this.directlyRenderedStrokeIds.clear();
-    this.activeStroke = null;
-    this.renderCommittedSoon();
-    this.options.onChange();
-  }
+  clear(): void { this.replaceStrokes([]); }
 
   private bindEvents(): void {
     this.liveCanvas.addEventListener("lostpointercapture", this.onLostPointerCapture, { passive: false });
@@ -338,7 +310,7 @@ export class InkEngine {
       this.notePenActivity();
     }
     this.renderLiveIncrement(this.activeStroke, previousPointCount);
-    this.renderPredictedStroke(this.activeStroke, event);
+    this.pendingPredictionEvent=event;
     this.debugMoveCounter++;
     if (this.debugMoveCounter % 8 === 0) {
       this.debugPointerEvent("pointermove", event, this.activeStroke.points.length);
@@ -347,6 +319,7 @@ export class InkEngine {
   };
 
   private onPointerUp = (event: PointerEvent): void => {
+    if (this.isEventFromToolbar(event) && this.activePointerId !== event.pointerId && this.panPointerId !== event.pointerId) return;
     if (!this.inputEnabled) return;
     if (!this.isEventInsideAnnotation(event) && this.activePointerId !== event.pointerId && this.panPointerId !== event.pointerId) return;
 
@@ -435,7 +408,8 @@ export class InkEngine {
     if (this.isEventFromToolbar(event)) return;
     if (!this.inputEnabled) return;
     if (!this.isEventInsideAnnotation(event)) return;
-    if (event.touches.length > 1) {
+    const canvasTouches = Array.from(event.touches).filter(touch => !(touch.target instanceof Element && touch.target.closest(".mobile-ink-quick-eraser")));
+    if (canvasTouches.length > 1) {
       if (this.activeTouchId !== null) {
         this.finishInterruptedInput();
       }
@@ -472,8 +446,8 @@ export class InkEngine {
     this.activeTouchId = touch.identifier;
 
     if (this.toolState.tool === "eraser") {
-      this.flushPendingCommits();
-      this.eraserChanged = false;
+        this.eraserChanged = false;
+      this.eraserBefore=this.strokes;
       this.eraseAtTouch(touch, event);
       return;
     }
@@ -626,8 +600,8 @@ export class InkEngine {
     this.activePointerId = event.pointerId;
 
     if (this.toolState.tool === "eraser") {
-      this.flushPendingCommits();
-      this.eraserChanged = false;
+        this.eraserChanged = false;
+      this.eraserBefore=this.strokes;
       this.eraseAtEvent(event);
       return;
     }
@@ -823,13 +797,13 @@ export class InkEngine {
 
     for (let i = 0; i < events.length; i++) {
       const coalesced = events[i];
-      const point = this.eventToPoint(coalesced, this.nextSampleTime(), mapping);
+      const point = this.eventToPoint(coalesced, this.nextSampleTime(coalesced.timeStamp), mapping);
       this.appendPoint(stroke, point);
     }
 
     const lastEvent = events[events.length - 1];
     if (lastEvent && (lastEvent.clientX !== event.clientX || lastEvent.clientY !== event.clientY)) {
-      this.appendPoint(stroke, this.eventToPoint(event, this.nextSampleTime(), mapping));
+      this.appendPoint(stroke, this.eventToPoint(event, this.nextSampleTime(event.timeStamp), mapping));
     }
   }
 
@@ -874,6 +848,7 @@ export class InkEngine {
       points: [lastRealPoint, ...predictedPoints]
     };
     drawStrokeSegment(this.liveCtx, predictedStroke, 1);
+    drawStrokeTail(this.liveCtx,predictedStroke);
     this.predictedStrokeRendered = true;
   }
 
@@ -889,7 +864,7 @@ export class InkEngine {
     this.appendPoint(stroke, this.clientToPoint(
       touch.clientX,
       touch.clientY,
-      this.nextSampleTime(),
+      this.nextSampleTime(event.timeStamp),
       Number.isFinite(candidate.force) && candidate.force !== undefined && candidate.force > 0 ? candidate.force : 0.5,
       mapping
     ));
@@ -911,7 +886,7 @@ export class InkEngine {
       event.clientX,
       event.clientY,
       timeStamp,
-      Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : 0.5,
+      Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : this.activeStroke?.points[this.activeStroke.points.length-1]?.pressure ?? 0.5,
       mapping,
       event.tiltX,
       event.tiltY
@@ -976,7 +951,7 @@ export class InkEngine {
     const target = event.target;
     if (!(target instanceof Element)) return false;
 
-    if (target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav")) return true;
+    if (target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav")) return true;
 
     if (target.closest(".mobile-ink-object-control, .mobile-ink-object-resize-handle, .mobile-ink-object-delete")) {
       return true;
@@ -998,8 +973,8 @@ export class InkEngine {
     document.getSelection()?.removeAllRanges();
   }
 
-  private nextSampleTime(): number {
-    const now = performance.now();
+  private nextSampleTime(time = performance.now()): number {
+    const now = Number.isFinite(time) && time >= 0 ? time : performance.now();
     this.sampleTime = Math.max(now, this.sampleTime + 0.001);
     return this.sampleTime;
   }
@@ -1064,21 +1039,10 @@ export class InkEngine {
     });
   }
 
-  private recordUndoSnapshot(previous: InkStroke[], next?: InkStroke[]): void {
-    if (next && strokesEqual(previous, next)) return;
-
-    this.undoStack.push(cloneStrokes(previous));
-    this.redoStack = [];
-    this.trimHistoryStacks();
-  }
-
-  private trimHistoryStacks(): void {
-    if (this.undoStack.length > HISTORY_STACK_LIMIT) {
-      this.undoStack.splice(0, this.undoStack.length - HISTORY_STACK_LIMIT);
-    }
-    if (this.redoStack.length > HISTORY_STACK_LIMIT) {
-      this.redoStack.splice(0, this.redoStack.length - HISTORY_STACK_LIMIT);
-    }
+  private notifyEraserChange(): void {
+    if(this.eraserBefore && !this.options.externalHistory)this.history.record(strokeChange(this.eraserBefore,this.strokes));
+    this.eraserBefore=null;
+    this.options.onChange();
   }
 
   private describeEventTarget(event: Event): string {
@@ -1091,42 +1055,52 @@ export class InkEngine {
   }
 
   private commitStroke(stroke: InkStroke): void {
-    if (stroke.points.length === 0) return;
-
-    if (stroke.points.length === 1) {
-      const p = stroke.points[0];
-      stroke.points.push({ ...p, x: p.x + 0.1, y: p.y + 0.1 });
-    }
-
-    this.recordUndoSnapshot(this.strokes);
-    this.strokes.push({ ...stroke, points: stroke.points.map((point) => ({ ...point })) });
-    if (!this.directlyRenderedStrokeIds.delete(stroke.id)) {
-      drawStroke(this.committedCtx, stroke);
-    }
+    if(!stroke.points.length)return;
+    this.flushStrokeRender(stroke,true);
+    if(!this.options.externalHistory)this.history.record({removed:[],added:[{index:this.strokes.length,stroke}]});
+    this.strokes=[...this.strokes,stroke];
     this.options.onStrokeCommit?.(stroke);
-    this.debugStroke("commit", stroke);
     this.options.onChange();
   }
 
   private renderLiveSoon(): void {
-    if (!this.liveCanvasDirty) return;
-    if (this.liveRenderRaf !== null) return;
-    this.liveRenderRaf = requestAnimationFrame(() => {
-      this.liveRenderRaf = null;
-      this.renderLiveNow();
+    if(this.liveRenderRaf!==null || !this.queuedStroke)return;
+    this.liveRenderRaf=requestAnimationFrame(()=>{
+      this.liveRenderRaf=null;
+      const stroke=this.queuedStroke;
+      if(stroke)this.flushStrokeRender(stroke,false);
     });
   }
-
-  private renderLiveNow(): void {
-    if (!this.liveCanvasDirty) return;
-    this.clearLiveCanvas();
-    this.liveCanvasDirty = false;
+  private renderLiveIncrement(stroke:InkStroke,_previousPointCount:number):void {
+    this.queuedStroke=stroke;this.renderLiveSoon();
   }
-
-  private renderLiveIncrement(stroke: InkStroke, previousPointCount: number): void {
-    if (stroke.points.length <= previousPointCount) return;
-    this.directlyRenderedStrokeIds.add(stroke.id);
-    drawStrokeSegment(this.committedCtx, stroke, previousPointCount);
+  private flushStrokeRender(stroke:InkStroke,finished:boolean):void {
+    const count=this.renderedPointCounts.get(stroke) ?? 0;
+    if(stroke.tool==='highlighter') {
+      this.liveCanvas.style.opacity='0.35';this.liveCanvas.style.mixBlendMode='multiply';
+      drawStrokeSegment(this.liveCtx,stroke,count,true);
+      if(finished) {drawStroke(this.committedCtx,stroke);this.clearLiveCanvas();}
+    } else {
+      this.liveCanvas.style.opacity='1';this.liveCanvas.style.mixBlendMode='normal';
+      this.clearLiveCanvas();
+      drawStrokeSegment(this.committedCtx,stroke,count);
+      if(finished)drawStrokeTail(this.committedCtx,stroke);
+      else {
+        drawStrokeTail(this.liveCtx,stroke);
+        const tail=stroke.points.slice(-2),pad=stroke.width*2+4;
+        const xs=tail.map(p=>p.x),ys=tail.map(p=>p.y);
+        this.liveTailBounds={x:Math.min(...xs)-pad,y:Math.min(...ys)-pad,width:Math.max(...xs)-Math.min(...xs)+2*pad,height:Math.max(...ys)-Math.min(...ys)+2*pad};
+        // Prediction is transient and is never saved or included in undo history.
+        if(this.pendingPredictionEvent)this.renderPredictedStroke(stroke,this.pendingPredictionEvent);
+      }
+    }
+    this.renderedPointCounts.set(stroke,stroke.points.length);
+    this.pendingPredictionEvent=null;
+    this.queuedStroke=finished ? null : stroke;
+  }
+  private renderLiveNow():void {
+    if(this.activeStroke)this.flushStrokeRender(this.activeStroke,false);
+    else {this.clearLiveCanvas();this.queuedStroke=null;}
   }
 
   private renderCommittedSoon(): void {
@@ -1141,19 +1115,19 @@ export class InkEngine {
     this.clearPredictedStroke();
     this.clearCommittedCanvas();
     drawStrokes(this.committedCtx, this.strokes);
-    drawStrokes(this.committedCtx, this.pendingCommittedStrokes);
-    for (const stroke of this.pendingCommittedStrokes) {
-      this.directlyRenderedStrokeIds.add(stroke.id);
-    }
-    if (this.activeStroke) {
-      drawStroke(this.committedCtx, this.activeStroke);
-      this.directlyRenderedStrokeIds.add(this.activeStroke.id);
+    if(this.activeStroke) {
+      this.renderedPointCounts.delete(this.activeStroke);
+      this.clearLiveCanvas();
+      this.flushStrokeRender(this.activeStroke,false);
     }
   }
 
   private clearLiveCanvas(): void {
-    this.liveCtx.clearRect(0, 0, this.width, this.height);
-    this.predictedStrokeRendered = false;
+    const bounds=this.liveTailBounds;
+    if(bounds && !this.predictedStrokeRendered)this.liveCtx.clearRect(bounds.x,bounds.y,bounds.width,bounds.height);
+    else this.liveCtx.clearRect(0,0,this.width,this.height);
+    this.liveTailBounds=null;
+    this.predictedStrokeRendered=false;
   }
 
   private clearCommittedCanvas(): void {
@@ -1166,8 +1140,8 @@ export class InkEngine {
     const coalescedEvents = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [event];
     const mapping = this.getCanvasPointMapping();
     let changed = false;
-    for (const coalesced of coalescedEvents) {
-      const point = this.eventToPoint(coalesced, this.nextSampleTime(), mapping);
+    for (const coalesced of coalescedEvents.length ? coalescedEvents : [event]) {
+      const point = this.eventToPoint(coalesced, this.nextSampleTime(coalesced.timeStamp), mapping);
       changed = this.eraseAtPoint(point) || changed;
     }
 
@@ -1210,11 +1184,11 @@ export class InkEngine {
     this.safeReleasePointer(event.pointerId);
 
     if (this.eraserChanged) {
-      this.redoStack = [];
-      this.options.onChange();
+      this.notifyEraserChange();
     }
 
     this.eraserChanged = false;
+    this.eraserBefore = null;
     this.options.onInputEnd?.();
   }
 
@@ -1223,11 +1197,11 @@ export class InkEngine {
     this.safeReleasePointer(pointerId);
 
     if (this.eraserChanged) {
-      this.redoStack = [];
-      this.options.onChange();
+      this.notifyEraserChange();
     }
 
     this.eraserChanged = false;
+    this.eraserBefore = null;
     this.options.onInputEnd?.();
   }
 
@@ -1235,11 +1209,11 @@ export class InkEngine {
     this.activeTouchId = null;
 
     if (this.eraserChanged) {
-      this.redoStack = [];
-      this.options.onChange();
+      this.notifyEraserChange();
     }
 
     this.eraserChanged = false;
+    this.eraserBefore = null;
     this.options.onInputEnd?.();
   }
 
@@ -1250,7 +1224,7 @@ export class InkEngine {
     this.activePointerId = null;
     this.safeReleasePointer(pointerId);
 
-    if (stroke && stroke.points.length > 1) {
+    if (stroke && stroke.points.length > 0) {
       this.commitStrokeSoon(stroke);
       this.renderLiveSoon();
     }
@@ -1263,7 +1237,7 @@ export class InkEngine {
     this.activeStroke = null;
     this.activeTouchId = null;
 
-    if (stroke && stroke.points.length > 1) {
+    if (stroke && stroke.points.length > 0) {
       this.commitStrokeSoon(stroke);
       this.renderLiveSoon();
     }
@@ -1274,11 +1248,11 @@ export class InkEngine {
     this.activeTouchId = null;
 
     if (this.eraserChanged) {
-      this.redoStack = [];
-      this.options.onChange();
+      this.notifyEraserChange();
     }
 
     this.eraserChanged = false;
+    this.eraserBefore = null;
     this.options.onInputEnd?.();
   }
 
@@ -1309,8 +1283,7 @@ export class InkEngine {
       this.commitStrokeSoon(stroke);
       this.renderLiveSoon();
     } else if (eraserChanged) {
-      this.redoStack = [];
-      this.options.onChange();
+      this.notifyEraserChange();
     }
     if (activePointerId !== null || activeTouchId !== null || stroke || eraserChanged) {
       this.options.onInputEnd?.();
@@ -1337,41 +1310,7 @@ export class InkEngine {
     }
   }
 
-  private commitStrokeSoon(stroke: InkStroke): void {
-    this.pendingCommittedStrokes.push(stroke);
-    if (this.pendingCommitTimer !== null) return;
-    this.schedulePendingCommitFlush();
-  }
-
-  private flushPendingCommits(): void {
-    if (this.activeStroke) {
-      this.schedulePendingCommitFlush();
-      return;
-    }
-
-    if (this.pendingCommitTimer !== null) {
-      window.clearTimeout(this.pendingCommitTimer);
-      this.pendingCommitTimer = null;
-    }
-
-    const strokes = this.pendingCommittedStrokes.splice(0);
-    for (const stroke of strokes) {
-      this.commitStroke(stroke);
-    }
-
-    this.renderLiveNow();
-  }
-
-  private schedulePendingCommitFlush(): void {
-    if (this.pendingCommitTimer !== null) {
-      window.clearTimeout(this.pendingCommitTimer);
-    }
-
-    this.pendingCommitTimer = window.setTimeout(() => {
-      this.flushPendingCommits();
-    }, COMMIT_IDLE_MS);
-  }
-
+  private commitStrokeSoon(stroke:InkStroke):void { this.commitStroke(stroke); }
   private findChangedTouch(event: TouchEvent, identifier: number): Touch | null {
     for (let i = 0; i < event.changedTouches.length; i++) {
       const touch = event.changedTouches.item(i);
@@ -1387,37 +1326,6 @@ function cloneStrokes(strokes: InkStroke[]): InkStroke[] {
     ...stroke,
     points: stroke.points.map((point) => ({ ...point }))
   }));
-}
-
-function strokesEqual(a: InkStroke[], b: InkStroke[]): boolean {
-  if (a.length !== b.length) return false;
-
-  for (let i = 0; i < a.length; i++) {
-    const left = a[i];
-    const right = b[i];
-    if (left.id !== right.id
-      || left.tool !== right.tool
-      || left.color !== right.color
-      || left.width !== right.width
-      || left.points.length !== right.points.length) {
-      return false;
-    }
-
-    for (let j = 0; j < left.points.length; j++) {
-      const lp = left.points[j];
-      const rp = right.points[j];
-      if (lp.x !== rp.x
-        || lp.y !== rp.y
-        || lp.t !== rp.t
-        || lp.pressure !== rp.pressure
-        || lp.tiltX !== rp.tiltX
-        || lp.tiltY !== rp.tiltY) {
-        return false;
-      }
-    }
-  }
-
-  return true;
 }
 
 function strokeIntersectsCircle(stroke: InkStroke, cx: number, cy: number, radiusSq: number): boolean {

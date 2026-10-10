@@ -1,4 +1,6 @@
+import { isMobileInkEnvironment } from "../utils/platform";
 import { InkEngine } from "./InkEngine";
+import { StrokeHistory, strokeChange, applyStrokeChange, sameStroke, type StrokeChange } from "./StrokeHistory";
 import type { InkController } from "./InkController";
 import type { InkStroke, InkToolState } from "./types";
 
@@ -47,11 +49,9 @@ export class PageInkController implements InkController {
   private readonly pageStrokes = new Map<number, InkStroke[]>();
   private toolState: InkToolState;
   private inputEnabled = true;
-  private undoStack: InkStroke[][] = [];
-  private redoStack: InkStroke[][] = [];
-  private lastKnownStrokes: InkStroke[] = [];
-  private pendingUndoSnapshot: InkStroke[] | null = null;
-  private pendingSnapshotTimer: number | null = null;
+  private history = new StrokeHistory();
+  private strokes: InkStroke[] = [];
+  private canvasPixelBudget = 4_000_000;
   private applying = false;
   private visibleRaf: number | null = null;
   private displayScale = 1;
@@ -82,7 +82,6 @@ export class PageInkController implements InkController {
       cancelAnimationFrame(this.visibleRaf);
       this.visibleRaf = null;
     }
-    this.flushPendingChangeSnapshot();
 
     for (const page of this.pages) {
       this.releasePageEngine(page);
@@ -114,47 +113,23 @@ export class PageInkController implements InkController {
     this.queueVisibleRefresh();
   }
 
-  loadStrokes(strokes: InkStroke[]): void {
-    this.applyGlobalStrokes(strokes);
-    this.undoStack = [];
-    this.redoStack = [];
-    this.lastKnownStrokes = cloneStrokes(strokes);
-    this.queueVisibleRefresh();
+  loadStrokes(strokes:InkStroke[]):void {
+    this.strokes=cloneStrokes(strokes);
+    this.applyGlobalStrokes(this.strokes);this.history.reset();this.queueVisibleRefresh();
   }
-
-  replaceStrokes(strokes: InkStroke[], notify = true, undoSnapshot?: InkStroke[]): void {
-    this.flushPendingChangeSnapshot();
+  replaceStrokes(strokes:InkStroke[],notify=true,undoSnapshot?:InkStroke[]):void {
     this.flushPendingStrokes();
-    const previous = undoSnapshot ? cloneStrokes(undoSnapshot) : this.getStrokesFromPages();
-    const next = cloneStrokes(strokes);
-
-    if (notify && !strokesEqual(previous, next)) {
-      this.undoStack.push(previous);
-      this.redoStack = [];
-      this.trimHistoryStacks();
-    }
-
-    this.applyGlobalStrokes(next);
-    this.lastKnownStrokes = cloneStrokes(next);
-
-    if (notify) {
-      this.options.onChange();
-    }
+    const next=cloneStrokes(strokes),change=strokeChange(undoSnapshot ?? this.strokes,next);
+    if(notify)this.history.record(change);
+    this.strokes=next;
+    this.updateChangedPages(change);
+    if(notify)this.options.onChange();
   }
-
-  getStrokes(): InkStroke[] {
-    this.flushPendingChangeSnapshot();
-    return this.getStrokesFromPages();
-  }
-
-  flushPendingStrokes(): void {
-    for (const page of this.pages) {
-      if (!page.engine) continue;
-      page.engine.flushPendingStrokes();
-      this.syncPageFromEngine(page);
-    }
-    this.flushPendingChangeSnapshot();
-  }
+  getStrokes():InkStroke[] {return cloneStrokes(this.strokes);}
+  flushPendingStrokes():void {for(const page of this.pages)page.engine?.flushPendingStrokes();}
+  canUndo():boolean {return this.history.canUndo;}
+  canRedo():boolean {return this.history.canRedo;}
+  isInputActive():boolean {return this.pages.some(p=>p.engine?.isInputActive());}
 
   setToolState(patch: Partial<InkToolState>): void {
     this.toolState = { ...this.toolState, ...patch };
@@ -174,47 +149,17 @@ export class PageInkController implements InkController {
     }
   }
 
-  undo(): void {
-    this.flushPendingChangeSnapshot();
-    this.flushPendingStrokes();
-    const previous = this.undoStack.pop();
-    if (!previous) return;
-
-    const current = this.getStrokesFromPages();
-    this.redoStack.push(cloneStrokes(current));
-    this.trimHistoryStacks();
-    this.applyGlobalStrokes(previous);
-    this.lastKnownStrokes = cloneStrokes(previous);
-    this.options.onChange();
+  undo():void {
+    this.flushPendingStrokes();const change=this.history.undo();if(!change)return;
+    this.strokes=applyStrokeChange(this.strokes,change,false);
+    this.updateChangedPages({removed:change.added,added:change.removed});this.options.onChange();
   }
-
-  redo(): void {
-    this.flushPendingChangeSnapshot();
-    this.flushPendingStrokes();
-    const next = this.redoStack.pop();
-    if (!next) return;
-
-    const current = this.getStrokesFromPages();
-    this.undoStack.push(cloneStrokes(current));
-    this.trimHistoryStacks();
-    this.applyGlobalStrokes(next);
-    this.lastKnownStrokes = cloneStrokes(next);
-    this.options.onChange();
+  redo():void {
+    this.flushPendingStrokes();const change=this.history.redo();if(!change)return;
+    this.strokes=applyStrokeChange(this.strokes,change);
+    this.updateChangedPages(change);this.options.onChange();
   }
-
-  clear(): void {
-    this.flushPendingChangeSnapshot();
-    this.flushPendingStrokes();
-    const current = this.getStrokesFromPages();
-    if (current.length > 0) {
-      this.undoStack.push(cloneStrokes(current));
-      this.redoStack = [];
-      this.trimHistoryStacks();
-    }
-    this.applyGlobalStrokes([]);
-    this.lastKnownStrokes = [];
-    this.options.onChange();
-  }
+  clear():void {this.replaceStrokes([]);}
 
   private onScroll = (): void => {
     this.queueVisibleRefresh();
@@ -231,7 +176,7 @@ export class PageInkController implements InkController {
   private refreshVisiblePages(): void {
     if (this.pages.length === 0) return;
 
-    const mobile = window.innerWidth <= 820 || window.matchMedia?.("(pointer: coarse)").matches === true;
+    const mobile = isMobileInkEnvironment();
     const keepMargin = this.options.keepMarginPx ?? (mobile
       ? Math.max(this.options.scrollEl.clientHeight * 0.85, 420)
       : Math.max(this.options.scrollEl.clientHeight * 1.8, 820));
@@ -239,30 +184,26 @@ export class PageInkController implements InkController {
     const visibleRange = this.options.getVisibleRange?.();
     const useObservedPages = this.observedNearPages.size > 0;
 
-    for (const page of this.pages) {
-      const near = useObservedPages
-        ? this.observedNearPages.has(page.pageNumber)
-        : visibleRange
-        ? page.offsetY + page.height >= visibleRange.top - keepMargin && page.offsetY <= visibleRange.bottom + keepMargin
-        : this.isPageNearViewport(page, keepMargin);
-      const far = useObservedPages
-        ? !this.observedNearPages.has(page.pageNumber)
-        : visibleRange
-        ? page.offsetY + page.height < visibleRange.top - releaseMargin || page.offsetY > visibleRange.bottom + releaseMargin
-        : this.isPageFarFromViewport(page, releaseMargin);
-
-      if (near) {
-        this.ensurePageEngine(page);
-      } else if (far) {
-        this.releasePageEngine(page);
-      }
-    }
+    const wanted=this.pages.filter(page=>{
+      const near=useObservedPages ? this.observedNearPages.has(page.pageNumber) : visibleRange
+        ? page.offsetY+page.height>=visibleRange.top-keepMargin && page.offsetY<=visibleRange.bottom+keepMargin
+        : this.isPageNearViewport(page,keepMargin);
+      const far=useObservedPages ? !this.observedNearPages.has(page.pageNumber) : visibleRange
+        ? page.offsetY+page.height<visibleRange.top-releaseMargin || page.offsetY>visibleRange.bottom+releaseMargin
+        : this.isPageFarFromViewport(page,releaseMargin);
+      return near || (page.engine!==null && (!far || page.engine.isInputActive()));
+    });
+    for(const page of this.pages)if(!wanted.includes(page))this.releasePageEngine(page);
+    // Reserve two layers per engine before mounting new pages. Canvas dimensions are rounded down.
+    this.canvasPixelBudget=Math.min(mobile ? 4_000_000 : 8_000_000,Math.floor((mobile ? 16_000_000 : 48_000_000)/Math.max(2,wanted.length*2)));
+    for(const page of wanted)page.engine?.setCanvasPixelBudget(this.canvasPixelBudget);
+    for(const page of wanted)this.ensurePageEngine(page);
   }
 
   private attachPageObserver(): void {
     if (typeof IntersectionObserver === "undefined" || this.pages.length === 0) return;
 
-    const mobile = window.innerWidth <= 820 || window.matchMedia?.("(pointer: coarse)").matches === true;
+    const mobile = isMobileInkEnvironment();
     const margin = Math.round(this.options.releaseMarginPx ?? (mobile
       ? Math.max(this.options.scrollEl.clientHeight * 0.9, 520)
       : Math.max(this.options.scrollEl.clientHeight * 1.7, 900)));
@@ -301,7 +242,7 @@ export class PageInkController implements InkController {
       if (this.observedNearPages.delete(page.pageNumber)) {
         changed = true;
       }
-      this.releasePageEngine(page);
+      if(!page.engine?.isInputActive())this.releasePageEngine(page);
     }
 
     if (changed) {
@@ -337,11 +278,12 @@ export class PageInkController implements InkController {
     const engine = new InkEngine(liveCanvas, committedCanvas, this.options.scrollEl, {
       initialToolState: this.toolState,
       canvasMaxDpr: this.getInkCanvasMaxDpr(),
-      canvasMaxPixels: this.getInkCanvasMaxPixels(),
+      canvasMaxPixels: this.canvasPixelBudget,
+      externalHistory: true,
       inputBounds: Number.isFinite(page.inputTop) && Number.isFinite(page.inputBottom)
         ? { top: page.inputTop ?? 0, bottom: page.inputBottom ?? page.height }
         : undefined,
-      recoverPointerOnMove: this.options.recoverPointerOnMove,
+      recoverPointerOnMove: false,
       panOutsideCanvas: this.options.panOutsideCanvas,
       onInputStart: this.options.onInputStart,
       onInputEnd: () => this.handlePageInputEnd(page),
@@ -351,6 +293,7 @@ export class PageInkController implements InkController {
     engine.setDisplayScale(this.displayScale);
     engine.setInputEnabled(this.inputEnabled);
     engine.loadStrokes(this.pageStrokes.get(page.pageNumber) ?? []);
+    this.pageStrokes.set(page.pageNumber,[...engine.getStrokeRefs()]);
 
     page.committedCanvas = committedCanvas;
     page.liveCanvas = liveCanvas;
@@ -361,8 +304,9 @@ export class PageInkController implements InkController {
     if (!page.engine) return;
 
     page.engine.flushPendingStrokes();
-    this.syncPageFromEngine(page);
     page.engine.destroy();
+    if(page.committedCanvas)page.committedCanvas.width=page.committedCanvas.height=0;
+    if(page.liveCanvas)page.liveCanvas.width=page.liveCanvas.height=0;
     page.engine = null;
     page.committedCanvas?.remove();
     page.liveCanvas?.remove();
@@ -370,65 +314,53 @@ export class PageInkController implements InkController {
     page.liveCanvas = null;
   }
 
-  private handlePageChange(page: PageInkRuntime): void {
-    if (this.applying) return;
-
-    if (!this.pendingUndoSnapshot) {
-      this.pendingUndoSnapshot = this.lastKnownStrokes;
-    }
-    this.syncPageFromEngine(page);
-    this.scheduleChangeSnapshot();
+  private handlePageChange(page:PageInkRuntime):void {
+    if(this.applying || !page.engine)return;
+    const before=this.pageStrokes.get(page.pageNumber) ?? [];
+    const after=page.engine.getStrokeRefs();
+    const local=strokeChange(before,after);
+    if(!local.removed.length && !local.added.length)return;
+    const global:StrokeChange={
+      removed:local.removed.flatMap(({stroke})=>{const index=this.strokes.findIndex(s=>s.id===stroke.id);return index<0 ? [] : [{index,stroke:this.strokes[index]}];}),
+      added:local.added.map(({stroke})=>{
+        const index=this.strokes.findIndex(s=>s.id===stroke.id);
+        return {index:index<0 ? this.strokes.length : index,stroke:{...stroke,points:stroke.points.map(p=>({...p,y:p.y+page.offsetY}))}};
+      })
+    };
+    // New strokes share local point arrays with the originating engine. Only changed geometry is converted.
+    this.strokes=applyStrokeChange(this.strokes,global);
+    this.history.record(global);
+    this.pageStrokes.set(page.pageNumber,[...after]);
+    this.updateChangedPages(global,page);
     this.options.onChange();
   }
-
-  private handlePageInputEnd(page: PageInkRuntime): void {
-    page.engine?.flushPendingStrokes();
-    this.syncPageFromEngine(page);
-    const strokes = this.getStrokesFromPages();
-    this.applyGlobalStrokes(strokes);
-    this.options.onInputEnd?.();
+  private handlePageInputEnd(_page:PageInkRuntime):void {
+    this.options.onInputEnd?.();this.queueVisibleRefresh();
   }
-
-  private scheduleChangeSnapshot(): void {
-    if (this.pendingSnapshotTimer !== null) return;
-
-    this.pendingSnapshotTimer = window.setTimeout(() => {
-      this.pendingSnapshotTimer = null;
-      this.flushPendingChangeSnapshot();
-    }, 140);
+  private updateChangedPages(change:StrokeChange,source?:PageInkRuntime):void {
+    const affected=new Set<number>();
+    for(const {stroke} of [...change.removed,...change.added])for(const p of this.pagesForStroke(stroke))affected.add(p.pageNumber);
+    const ids=new Set([...change.removed,...change.added].map(e=>e.stroke.id));
+    this.applying=true;
+    try {for(const page of this.pages){
+      if(!affected.has(page.pageNumber) || page===source)continue;
+      const before=this.pageStrokes.get(page.pageNumber) ?? [];
+      const next=before.filter(s=>!ids.has(s.id));
+      for(const {stroke} of change.added)if(this.pagesForStroke(stroke).includes(page))next.push(this.toLocal(stroke,page));
+      // Preserve document order for overlapping translucent strokes.
+      const order=new Map(this.strokes.map((s,i)=>[s.id,i]));next.sort((a,b)=>(order.get(a.id)??0)-(order.get(b.id)??0));
+      this.pageStrokes.set(page.pageNumber,next);
+      if(before.length!==next.length || before.some((s,i)=>!sameStroke(s,next[i]))){page.engine?.replaceStrokes(next,false);
+        if(page.engine)this.pageStrokes.set(page.pageNumber,[...page.engine.getStrokeRefs()]);}
+    }} finally {this.applying=false;}
   }
-
-  private flushPendingChangeSnapshot(): void {
-    if (!this.pendingUndoSnapshot) return;
-
-    if (this.pendingSnapshotTimer !== null) {
-      window.clearTimeout(this.pendingSnapshotTimer);
-      this.pendingSnapshotTimer = null;
-    }
-
-    const previous = this.pendingUndoSnapshot;
-    this.pendingUndoSnapshot = null;
-    const current = this.getStrokesFromPages();
-    if (!strokesEqual(previous, current)) {
-      this.undoStack.push(cloneStrokes(previous));
-      this.redoStack = [];
-      this.trimHistoryStacks();
-      this.lastKnownStrokes = cloneStrokes(current);
-    }
+  private pagesForStroke(stroke:InkStroke):PageInkRuntime[] {
+    const bounds=getStrokeBounds(stroke);if(!bounds)return [];
+    const pad=stroke.width;
+    return this.pages.filter(p=>bounds.y+bounds.height+pad>=p.offsetY && bounds.y-pad<=p.offsetY+p.height);
   }
-
-  private trimHistoryStacks(): void {
-    if (this.undoStack.length > HISTORY_STACK_LIMIT) {
-      this.undoStack.splice(0, this.undoStack.length - HISTORY_STACK_LIMIT);
-    }
-    if (this.redoStack.length > HISTORY_STACK_LIMIT) {
-      this.redoStack.splice(0, this.redoStack.length - HISTORY_STACK_LIMIT);
-    }
-  }
-
-  private syncPageFromEngine(page: PageInkRuntime): void {
-    if (!page.engine) return;
-    this.pageStrokes.set(page.pageNumber, page.engine.getStrokes());
+  private toLocal(stroke:InkStroke,page:PageInkRuntime):InkStroke {
+    return {...stroke,points:stroke.points.map(p=>({...p,y:p.y-page.offsetY}))};
   }
 
   private applyGlobalStrokes(strokes: InkStroke[]): void {
@@ -438,92 +370,24 @@ export class PageInkController implements InkController {
     try {
       for (const page of this.pages) {
         const localStrokes = grouped.get(page.pageNumber) ?? [];
-        this.pageStrokes.set(page.pageNumber, cloneStrokes(localStrokes));
+        this.pageStrokes.set(page.pageNumber, localStrokes);
         page.engine?.replaceStrokes(localStrokes, false);
+        if(page.engine)this.pageStrokes.set(page.pageNumber,[...page.engine.getStrokeRefs()]);
       }
     } finally {
       this.applying = false;
     }
   }
 
-  private splitStrokesByPage(strokes: InkStroke[]): Map<number, InkStroke[]> {
-    const grouped = new Map<number, InkStroke[]>();
-
-    for (const stroke of strokes) {
-      const page = this.findPageForStroke(stroke);
-      if (!page) continue;
-      const localStroke = {
-        ...stroke,
-        points: stroke.points.map((point) => ({
-          ...point,
-          y: point.y - page.offsetY
-        }))
-      };
-      const pageStrokes = grouped.get(page.pageNumber) ?? [];
-      pageStrokes.push(localStroke);
-      grouped.set(page.pageNumber, pageStrokes);
+  private splitStrokesByPage(strokes:InkStroke[]):Map<number,InkStroke[]> {
+    const grouped=new Map<number,InkStroke[]>();
+    for(const stroke of strokes)for(const page of this.pagesForStroke(stroke)) {
+      const list=grouped.get(page.pageNumber) ?? [];list.push(this.toLocal(stroke,page));grouped.set(page.pageNumber,list);
     }
-
     return grouped;
   }
+  private getInkCanvasMaxDpr():number {return isMobileInkEnvironment() ? 3 : 3.75;}
 
-  private findPageForStroke(stroke: InkStroke): PageInkRuntime | null {
-    const bounds = getStrokeBounds(stroke);
-    const y = bounds ? bounds.y + bounds.height / 2 : stroke.points[0]?.y ?? 0;
-    let nearest: PageInkRuntime | null = null;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-
-    for (const page of this.pages) {
-      const primaryTop = page.offsetY + (page.inputTop ?? 0);
-      const primaryBottom = page.offsetY + (page.inputBottom ?? page.height);
-      if (y >= primaryTop && y < primaryBottom) {
-        return page;
-      }
-
-      const distance = y < primaryTop
-        ? primaryTop - y
-        : y - primaryBottom;
-      if (distance < nearestDistance) {
-        nearest = page;
-        nearestDistance = distance;
-      }
-    }
-
-    return nearest;
-  }
-
-  private getStrokesFromPages(): InkStroke[] {
-    const result: InkStroke[] = [];
-
-    for (const page of this.pages) {
-      if (page.engine) {
-        this.syncPageFromEngine(page);
-      }
-
-      const localStrokes = this.pageStrokes.get(page.pageNumber) ?? [];
-      for (const stroke of localStrokes) {
-        result.push({
-          ...stroke,
-          points: stroke.points.map((point) => ({
-            ...point,
-            y: point.y + page.offsetY
-          }))
-        });
-      }
-    }
-
-    return result;
-  }
-
-  private getInkCanvasMaxDpr(): number {
-    return window.innerWidth <= 820 || window.matchMedia?.("(pointer: coarse)").matches === true ? 3 : 3.75;
-  }
-
-  private getInkCanvasMaxPixels(): number {
-    return window.innerWidth <= 820 || window.matchMedia?.("(pointer: coarse)").matches === true
-      ? 72_000_000
-      : 144_000_000;
-  }
 }
 
 function cloneStrokes(strokes: InkStroke[]): InkStroke[] {
