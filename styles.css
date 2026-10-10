@@ -2537,3 +2537,15 @@ input.mobile-ink-pdf-page-input {
 .note-ink-eraser-modes label { min-height: 44px; white-space: nowrap; }
 .note-ink-native-tools [hidden] { display: none !important; }
 .note-ink-native-tools[data-minimized="true"] { padding: 6px; box-sizing: border-box; border: 1px solid var(--background-modifier-border); border-radius: 50%; background: var(--background-primary); box-shadow: var(--shadow-s, 0 2px 8px #0003); }
+
+.note-ink-lasso-overlay { position: absolute; inset: 0; z-index: 9; pointer-events: none; }
+.note-ink-lasso-overlay > svg, .note-ink-lasso-overlay > canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.note-ink-lasso-path { stroke: var(--interactive-accent); stroke-width: 2; stroke-dasharray: 5 4; fill: var(--interactive-accent); fill-opacity: .08; }
+.note-ink-lasso-bounds { stroke: var(--interactive-accent); stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; }
+.note-ink-lasso-overlay button.note-ink-lasso-handle { position: absolute; width: 36px; height: 36px; min-width: 36px; padding: 0; transform: translate(-50%, -50%); border: 2px solid var(--interactive-accent); border-radius: 50%; background: var(--background-primary); color: var(--text-normal); font-size: 24px; pointer-events: auto; touch-action: pan-x pan-y pinch-zoom; }
+.note-ink-native-tools .note-ink-lasso-panel { position: absolute; width: 320px; box-sizing: border-box; padding: 12px; margin: 0; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 14px; background: var(--background-primary); color: var(--text-normal); box-shadow: var(--shadow-s, 0 2px 8px #0003); font-size: 13px; }
+.note-ink-lasso-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 6px 0 10px; white-space: normal; }
+.note-ink-lasso-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+.note-ink-native-tools .note-ink-lasso-actions button { min-height: 44px; height: auto; white-space: normal; font-size: 12px; padding: 6px; }
+.note-ink-lasso-directions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
+.note-ink-lasso-delete { grid-column: 1 / -1; }

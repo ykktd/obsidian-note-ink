@@ -53,7 +53,7 @@ async function exportCheck(){const bytes=await exportNativePdf(pdf,session.contr
  for(const n of [1,2,7,20]){const p=await copy.getPage(n),v=p.getViewport({scale:1}),c=document.createElement('canvas');c.width=Math.ceil(v.width);c.height=Math.ceil(v.height);await p.render({canvasContext:c.getContext('2d'),canvas:c,viewport:v}).promise;const pixels=c.getContext('2d')!.getImageData(0,0,c.width,c.height).data;let red=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i]>160&&pixels[i+1]<130&&pixels[i+2]<150)red++;checks.push({page:n,red,text:(await p.getTextContent()).items.map((x:any)=>x.str).join(' '),notes:(await p.getAnnotations()).map((a:any)=>a.contentsObj?.str)});}
  await copy.destroy();return {bytes:Array.from(bytes),checks};}
 async function switchFile(){pen(1,170,150);const count=session.controller.annotation.strokes.length;await view.onUnloadFile(file);view.file=new TFile('講義/別資料.pdf');return {closed:session.closed,saved:JSON.parse(disk.get(plugin.store.getAnnotationPath(source))!).strokes.length,count,live:view.contentEl.querySelectorAll('.note-ink-native-live').length,tools:view.contentEl.querySelectorAll('.note-ink-native-tools').length};}
-function textSelection(){document.querySelector<HTMLButtonElement>('button[aria-label="閲覧・文字選択"]')!.click();const span=viewer.getPageView(0).div.querySelector('.textLayer span')!,range=document.createRange();range.selectNodeContents(span);document.getSelection()!.removeAllRanges();document.getSelection()!.addRange(range);const box=span.getBoundingClientRect();viewer.container.dispatchEvent(new MouseEvent('contextmenu',{view:window,bubbles:true,cancelable:true,clientX:box.x+10,clientY:box.y+10}));return {text:document.getSelection()!.toString(),menu:document.querySelector('.test-menu')?.textContent};}
+function textSelection(){session.controller.setInputEnabled(false);const span=viewer.getPageView(0).div.querySelector('.textLayer span')!,range=document.createRange();range.selectNodeContents(span);document.getSelection()!.removeAllRanges();document.getSelection()!.addRange(range);const box=span.getBoundingClientRect();viewer.container.dispatchEvent(new MouseEvent('contextmenu',{view:window,bubbles:true,cancelable:true,clientX:box.x+10,clientY:box.y+10}));return {text:document.getSelection()!.toString(),menu:document.querySelector('.test-menu')?.textContent};}
 w.nativeHarness={open,pen,point,finger,snapshot,saveReload,saveFailure,exportCheck,switchFile,textSelection,get session(){return session;},get viewer(){return viewer;},get view(){return view;},get pdf(){return pdf;},get plugin(){return plugin;},get disk(){return disk;}};
 w.nativeReady=true;
 
@@ -62,4 +62,12 @@ w.nativeHarness.cutoutExport=async()=>{
  const p=await copy.getPage(1),v=p.getViewport({scale:2}),c=document.createElement('canvas');c.width=Math.ceil(v.width);c.height=Math.ceil(v.height);
  await p.render({canvas:c,canvasContext:c.getContext('2d'),viewport:v}).promise;
  const samples=[100,170,240].map(x=>{const [px,py]=transformPoint(v.transform,x,150);return Array.from(c.getContext('2d')!.getImageData(Math.round(px),Math.round(py),1,1).data);});await copy.destroy();return samples;
+};
+
+w.nativeHarness.lassoExport=async()=>{
+ const bytes=await exportNativePdf(pdf,session.controller.annotation,()=>{}),copy=await core.getDocument({data:bytes.slice(),isEvalSupported:false}).promise;
+ const p=await copy.getPage(1),v=p.getViewport({scale:3}),c=document.createElement('canvas');c.width=Math.ceil(v.width);c.height=Math.ceil(v.height);
+ await p.render({canvas:c,canvasContext:c.getContext('2d'),viewport:v}).promise;
+ const stroke=session.controller.annotation.strokes.find(s=>s.id==='a')!,a=stroke.points[0],b=stroke.points[1];
+ const samples=[{x:a.x*.8+b.x*.2,y:a.y*.8+b.y*.2},stroke.erasures![0].points[0]].map(point=>{const [x,y]=transformPoint(v.transform,point.x,point.y);return Array.from(c.getContext('2d')!.getImageData(Math.round(x),Math.round(y),1,1).data);});await copy.destroy();return samples;
 };

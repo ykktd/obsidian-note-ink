@@ -3,6 +3,7 @@ import { FloatingInkToolbar } from "../ui/FloatingInkToolbar";
 import { SaveQueue } from "../ink/SaveQueue";
 import type { StrokeStore } from "../ink/StrokeStore";
 import type { InkTool, PdfTextAnnotation, PdfTextAnnotationRect } from "../ink/types";
+import { NativePdfLasso } from "./NativePdfLasso";
 import { NativePdfInkController } from "./NativePdfInkController";
 import { connectNativePdf, type NativePdfBinding } from "./NativePdfViewer";
 import { invertMatrix, transformPoint } from "./exportAnnotatedPdf";
@@ -17,7 +18,8 @@ export class NativePdfAnnotationSession {
   private tools:HTMLElement;
   private floatingToolbar:FloatingInkToolbar;
   private buttons=new Map<string,HTMLButtonElement>();
-  private readMode=false;
+  private lassoMode=false;
+  private lasso:NativePdfLasso;
   private drawingTool:InkTool="pen";
   private width:HTMLInputElement;
   private color:HTMLInputElement;
@@ -43,7 +45,7 @@ export class NativePdfAnnotationSession {
     this.raw=loaded.raw;this.doc=binding.viewer.container.ownerDocument;
     this.queue=new SaveQueue(async()=>{this.controller.flushPendingStrokes();this.raw=await store.savePdf(this.controller.annotation,this.raw);},800,
       error=>this.showError(error),()=>{this.errorEl?.remove();this.errorEl=null;});
-    this.controller=new NativePdfInkController(binding,loaded.annotation,{onChange:()=>{this.queue.markDirty();this.refresh();},
+    this.controller=new NativePdfInkController(binding,loaded.annotation,{onChange:()=>{this.queue.markDirty();this.lasso?.refresh();this.refresh();},
       onInputStart:()=>this.queue.setPaused(true),onInputEnd:()=>{this.queue.setPaused(false);this.refresh();},
       onDocumentChanged:()=>{void this.close().then(()=>new Notice("PDFが更新されたため、注釈を閉じました。注釈を開き直してください。")).catch(error=>this.showError(error));}});
     const content=binding.view.contentEl as HTMLElement;content.classList.add("note-ink-native-host");
@@ -53,7 +55,7 @@ export class NativePdfAnnotationSession {
       const b=this.doc.createElement("button");b.type="button";b.className="mobile-ink-icon-button";b.setAttribute("aria-label",label);b.title=label;setIcon(b,icon);b.addEventListener("click",action);dock.append(b);this.buttons.set(key,b);return b;
     };
     button("pen","pencil","ペン",()=>this.setTool("pen"));button("highlighter","highlighter","蛍光ペン",()=>this.setTool("highlighter"));button("eraser","eraser","消しゴム",()=>this.setTool("eraser"));
-    button("read","text-select","閲覧・文字選択",()=>{this.readMode=true;this.controller.setInputEnabled(false);this.refresh();});
+    button("lasso","lasso-select","投げ縄選択",()=>{this.controller.flushPendingStrokes();this.lassoMode=true;this.controller.setInputEnabled(false);this.lasso.setEnabled(true);this.refresh();});
     this.color=this.doc.createElement("input");this.color.type="color";this.color.setAttribute("aria-label","色");this.color.title="色";this.color.addEventListener("input",()=>{const state=this.controller.getToolState();this.controller.setToolState(state.tool==="highlighter"?{highlighterColor:this.color.value}:{color:this.color.value});});dock.append(this.color);
     const widthLabel=this.doc.createElement("label");widthLabel.className="note-ink-native-width";widthLabel.append("太さ");this.width=this.doc.createElement("input");this.width.type="range";this.width.min=".5";this.width.max="72";this.width.step=".5";this.width.setAttribute("aria-label","太さ");this.widthValue=this.doc.createElement("output");widthLabel.append(this.width,this.widthValue);dock.append(widthLabel);
     this.width.addEventListener("input",()=>{const value=Number(this.width.value),state=this.controller.getToolState();if(!Number.isFinite(value)||value<.5||value>72){this.refresh();return;}this.controller.setToolState(state.tool==="eraser"?{eraserRadius:value}:state.tool==="highlighter"?{highlighterWidth:value}:{width:value});this.refresh();});
@@ -68,6 +70,8 @@ export class NativePdfAnnotationSession {
       wrap.append(radio,label);this.eraserModes.append(wrap);
     }
     this.tools.append(this.eraserModes);
+    this.lasso=new NativePdfLasso(binding,this.controller,()=>this.app.workspace.activeLeaf?.view===this.binding.view);
+    this.tools.append(this.lasso.panel);
     button("undo","undo-2","元に戻す",()=>this.controller.undo());button("redo","redo-2","やり直す",()=>this.controller.redo());
     button("save","save","注釈を保存",()=>{void this.save().catch(()=>{});});
     this.floatingToolbar=new FloatingInkToolbar(content,this.tools,dock,this.eraserModes,this.buttons.get("eraser")!);
@@ -93,7 +97,7 @@ export class NativePdfAnnotationSession {
   /** Plugin unload cannot await Obsidian's hook; start the final save before removing listeners. */
   unload():void{void this.close().catch(error=>{console.error("Note Ink: final PDF save failed",error);this.destroy();new Notice("注釈の最終保存に失敗しました。プラグインを閉じる前に保存を確認してください。",10000);});}
   private destroy():void{
-    if(this.disposed)return;this.disposed=true;this.floatingToolbar.destroy();this.controller.destroy();this.queue.setPaused(true);
+    if(this.disposed)return;this.disposed=true;this.floatingToolbar.destroy();this.lasso.destroy();this.controller.destroy();this.queue.setPaused(true);
     this.tools.remove();for(const action of this.actions)action.remove();this.errorEl?.remove();
     this.binding.viewer.container.removeEventListener("contextmenu",this.onContextMenu,true);this.doc.removeEventListener("keydown",this.onKeyDown,true);
     if(this.binding.view.onUnloadFile===this.unloadHook)this.binding.view.onUnloadFile=this.originalUnload;
@@ -102,19 +106,20 @@ export class NativePdfAnnotationSession {
   }
   private setTool(tool:InkTool):void{
     this.controller.flushPendingStrokes();
-    if(tool==="eraser"&&!this.readMode&&this.controller.getToolState().tool==="eraser")tool=this.drawingTool;
+    if(tool==="eraser"&&!this.lassoMode&&this.controller.getToolState().tool==="eraser")tool=this.drawingTool;
     if(tool!=="eraser")this.drawingTool=tool;
-    this.readMode=false;this.controller.setInputEnabled(true);this.controller.setToolState({tool});this.refresh();
+    this.lassoMode=false;this.lasso.setEnabled(false);this.controller.setInputEnabled(true);this.controller.setToolState({tool});this.refresh();
   }
   private refresh():void{
     if(this.disposed||!this.buttons.size)return;const state=this.controller.getToolState();
-    for(const tool of ["pen","highlighter","eraser"]){const b=this.buttons.get(tool)!;b.classList.toggle("mobile-ink-active",!this.readMode&&state.tool===tool);b.setAttribute("aria-pressed",String(!this.readMode&&state.tool===tool));}
-    this.buttons.get("read")!.setAttribute("aria-pressed",String(this.readMode));this.buttons.get("read")!.classList.toggle("mobile-ink-active",this.readMode);
+    for(const tool of ["pen","highlighter","eraser"]){const b=this.buttons.get(tool)!;b.classList.toggle("mobile-ink-active",!this.lassoMode&&state.tool===tool);b.setAttribute("aria-pressed",String(!this.lassoMode&&state.tool===tool));}
+    this.buttons.get("lasso")!.setAttribute("aria-pressed",String(this.lassoMode));this.buttons.get("lasso")!.classList.toggle("mobile-ink-active",this.lassoMode);
     this.buttons.get("undo")!.disabled=!this.controller.canUndo();this.buttons.get("redo")!.disabled=!this.controller.canRedo();
-    this.color.value=state.tool==="highlighter"?state.highlighterColor:state.color;this.color.disabled=state.tool==="eraser";
-    this.floatingToolbar?.setPanelVisible(!this.readMode&&state.tool==="eraser");
+    this.color.value=state.tool==="highlighter"?state.highlighterColor:state.color;this.color.disabled=this.lassoMode||state.tool==="eraser";
+    this.floatingToolbar?.setPanel(this.lassoMode?this.lasso.panel:this.eraserModes,this.buttons.get(this.lassoMode?"lasso":"eraser")!);
+    this.floatingToolbar?.setPanelVisible(this.lassoMode||state.tool==="eraser");
     for(const radio of this.eraserModes.querySelectorAll<HTMLInputElement>("input"))radio.checked=radio.value===state.eraserMode;
-    this.width.disabled=this.readMode;
+    this.width.disabled=this.lassoMode;
     this.width.setAttribute("aria-label",state.tool==="eraser"?"消しゴムの大きさ":"太さ");
     this.width.max=state.tool==="pen"?"12":state.tool==="highlighter"?"40":"72";
     this.width.value=String(state.tool==="eraser"?state.eraserRadius:state.tool==="highlighter"?state.highlighterWidth:state.width);

@@ -188,3 +188,29 @@ test('invalid cutout data is refused instead of silently restoring erased ink',(
   const bad=structuredClone(good);(bad.strokes[0] as any).erasures=erasures;assert.throws(()=>validatePdfAnnotation(bad,'test.pdf',1));
  }
 });
+
+import {lassoHits,transformStrokes,strokeBounds} from '../src/ink/lasso';
+test('lasso selects crossing segments, dots and boundaries without selecting outside strokes',()=>{
+ const polygon=[{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10}];
+ const make=(points:{x:number;y:number}[])=>({id:'a',tool:'pen' as const,color:'#112233',width:2,points:points.map(p=>({...p,t:1,pressure:.5}))});
+ assert.ok(lassoHits(make([{x:-5,y:5},{x:15,y:5}]),polygon));
+ assert.ok(lassoHits(make([{x:4,y:4}]),polygon));
+ assert.ok(lassoHits(make([{x:0,y:0}]),polygon));
+ assert.equal(lassoHits(make([{x:12,y:12},{x:20,y:20}]),polygon),false);
+ assert.equal(lassoHits(make([{x:4,y:4}]),polygon.slice(0,2)),false);
+});
+test('lasso transformations preserve erasures, input metadata and reversible PDF coordinates',()=>{
+ const original={id:'masked',tool:'highlighter' as const,color:'#aabbcc',width:4,points:[{x:10,y:20,t:55,pressure:.7},{x:30,y:20,t:60,pressure:.8}],erasures:[{radius:3,points:[{x:20,y:20}]}]};
+ const changed=transformStrokes([original],{x:20,y:20},5,7,2,Math.PI/2)[0];
+ assert.deepEqual(changed.points[0],{x:25,y:7,t:55,pressure:.7});
+ assert.deepEqual(changed.erasures,[{radius:6,points:[{x:25,y:27}]}]);assert.equal(changed.width,8);
+ assert.equal(original.points[0].x,10);assert.equal(original.erasures[0].radius,3);
+ assert.deepEqual(strokeBounds([original]),{x:8,y:18,width:24,height:4});
+ for(const transform of [[1,0,0,-1,-20,300],[0,1,1,0,-10,-20],[-1,0,0,1,400,-10],[0,-1,-1,0,300,400]] as const){
+  const v={scale:1,rotation:0,width:380,height:290,transform:[...transform] as [number,number,number,number,number,number]};
+  const pdfStroke=toPdfStroke(changed,2,v),local=toViewportStroke(pdfStroke,v);
+  for(let i=0;i<local.points.length;i++){assert.ok(Math.abs(local.points[i].x-changed.points[i].x)<1e-9);assert.ok(Math.abs(local.points[i].y-changed.points[i].y)<1e-9);}
+  assert.equal(pdfStroke.pageNumber,2);assert.equal(local.erasures![0].radius,6);
+ }
+ assert.throws(()=>transformStrokes([original],{x:0,y:0},0,0,0));
+});
