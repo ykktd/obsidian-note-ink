@@ -9,12 +9,16 @@ export type InkPoint = {
   tiltY?: number;
 };
 
+export type InkErasePath = { radius: number; points: {x:number;y:number}[] };
+
 export type InkStroke = {
   id: string;
   tool: Exclude<InkTool, "eraser">;
   color: string;
   width: number;
   points: InkPoint[];
+  /** Per-stroke cutouts: later writing is never erased by older gestures. */
+  erasures?: InkErasePath[];
 };
 
 /** PDF user space, independent of scroll position, zoom and display rotation. */
@@ -163,6 +167,7 @@ export type InkToolState = {
   highlighterColor: string;
   highlighterWidth: number;
   eraserRadius: number;
+  eraserMode?: "partial" | "stroke";
   /**
    * false by default: Pencil/stylus writes, finger pans the page.
    * true: finger can also write, useful on Android phones without stylus pointerType support.

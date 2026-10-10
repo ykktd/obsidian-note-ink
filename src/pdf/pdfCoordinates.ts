@@ -23,13 +23,15 @@ export function pdfMarkShapes(mark: PdfAnnotationFile["pdfTextAnnotations"][numb
 }
 
 export function toViewportStroke(stroke: InkStroke, viewport: PdfViewport): InkStroke {
-  return {...stroke,width:stroke.width*viewport.scale,points:stroke.points.map(p=>{
+  return {...stroke,width:stroke.width*viewport.scale,
+    erasures:stroke.erasures?.map(e=>({radius:e.radius*viewport.scale,points:e.points.map(p=>{const [x,y]=transformPoint(viewport.transform,p.x,p.y);return {x,y};})})),points:stroke.points.map(p=>{
     const [x,y]=transformPoint(viewport.transform,p.x,p.y);return {...p,x,y};
   })};
 }
 export function toPdfStroke(stroke: InkStroke, pageNumber: number, viewport: PdfViewport, width=viewport.width,height=viewport.height): PdfInkStroke {
   const inverse=invertMatrix(viewport.transform);
-  return {...stroke,pageNumber,width:stroke.width/viewport.scale,points:stroke.points.map(p=>{
+  return {...stroke,pageNumber,width:stroke.width/viewport.scale,
+    erasures:stroke.erasures?.map(e=>({radius:e.radius/viewport.scale,points:e.points.map(p=>{const [x,y]=transformPoint(inverse,p.x*viewport.width/width,p.y*viewport.height/height);return {x,y};})})),points:stroke.points.map(p=>{
     const [x,y]=transformPoint(inverse,p.x*viewport.width/width,p.y*viewport.height/height);return {...p,x,y};
   })};
 }
@@ -83,6 +85,7 @@ export function validatePdfAnnotation(value: unknown, sourcePath: string, pageCo
   const ids=new Set<string>();
   for(const stroke of data.strokes){
     if(!stroke||typeof stroke.id!=="string"||ids.has(stroke.id)||!validPage(stroke.pageNumber,pageCount)||!["pen","highlighter"].includes(stroke.tool)||!/^#[\da-f]{6}$/i.test(stroke.color)||!Number.isFinite(stroke.width)||stroke.width<=0||!Array.isArray(stroke.points)||!stroke.points.length||stroke.points.some(p=>!p||![p.x,p.y,p.t,p.pressure].every(Number.isFinite)))throw new Error("保存済みの筆跡を読み取れません。元の注釈は保持しています。");
+    if(stroke.erasures!==undefined && (!Array.isArray(stroke.erasures)||stroke.erasures.some(e=>!e||!Number.isFinite(e.radius)||e.radius<=0||!Array.isArray(e.points)||!e.points.length||e.points.some(p=>!p||!Number.isFinite(p.x)||!Number.isFinite(p.y)))))throw new Error("消しゴムの保存データを読み取れません。元の注釈は保持しています。");
     ids.add(stroke.id);
   }
   for(const mark of data.pdfTextAnnotations){

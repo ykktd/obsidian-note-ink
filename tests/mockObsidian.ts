@@ -35,6 +35,7 @@ export function normalizePath(path:string){return path.replace(/\\/g,'/');}
 export function setIcon(el:HTMLElement,icon:string){
  el.dataset.icon=icon;
  const paths:Record<string,string>={
+  'save':'M5 3h12l4 4v14H3V3z M7 3v6h10V3 M7 21v-8h10v8',
   'pencil':'M4 20l4-1L20 7l-3-3L5 16z M14 7l3 3',
   'highlighter':'M5 16l5 3 10-10-5-5z M5 16l-1 4 4-1',
   'eraser':'M3 14l9-10 8 8-8 8H8z M7 10l8 8 M12 20h9',

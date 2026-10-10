@@ -73,6 +73,7 @@ export function drawPageOverlay(
     point.y >= page.offsetY - stroke.width && point.y <= page.offsetY+page.height+stroke.width))
     .map(stroke => ({...stroke,color:safeColor(stroke.color),
       width:Math.max(0.1,Math.min(144,stroke.width)),
+      erasures:stroke.erasures?.map(e=>({...e,points:e.points.map(p=>({...p,y:p.y-page.offsetY}))})),
       points:stroke.points.map(point => ({...point,y:point.y-page.offsetY}))}));
   drawStrokes(ctx,local);
 }

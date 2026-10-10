@@ -153,3 +153,38 @@ test('migration backup precedes the first v2 write; failed writes and stale sess
   const damaged=legacy([],480);damaged.pdfTextAnnotations=[{id:'bad-mark',kind:'highlight',pageNumber:1,color:'#112233',text:'text',createdAt:1,rects:[{x:1,y:1,width:-1,height:20}]}];
   const damagedRaw=JSON.stringify(damaged);disk.set(path,damagedRaw);await assert.rejects(store.loadPdf(file.path,pdf),/旧文字注釈/);assert.equal(disk.get(path),damagedRaw);
 });
+
+import {eraseStrokes} from '../src/ink/eraser';
+test('partial eraser sweeps fast movements and preserves original ink and history',()=>{
+ const s:InkStroke={id:'line',tool:'pen',color:'#112233',width:12,points:[{x:0,y:50,t:0,pressure:1},{x:100,y:50,t:20,pressure:1}]};
+ const after=eraseStrokes([s],{x:50,y:0},{x:50,y:100},6,'partial');
+ assert.equal(after.length,1);assert.deepEqual(after[0].points,s.points);assert.equal(s.erasures,undefined);
+ assert.deepEqual(after[0].erasures,[{radius:6,points:[{x:50,y:0},{x:50,y:100}]}]);
+ const change=strokeChange([s],after);assert.equal(change.removed.length,1);assert.equal(change.added.length,1);
+ assert.deepEqual(applyStrokeChange(after,change,false),[s]);assert.deepEqual(applyStrokeChange([s],change),after);
+ assert.equal(eraseStrokes(after,{x:50,y:20},{x:50,y:80},4,'partial')[0],after[0]);
+ assert.deepEqual(eraseStrokes([s],{x:50,y:0},{x:50,y:100},6,'stroke'),[]);
+ assert.equal(eraseStrokes([s],{x:50,y:90},{x:50,y:100},6,'partial')[0],s);
+});
+test('eraser includes visible width and follows midpoint curves',()=>{
+ const s:InkStroke={id:'wide',tool:'highlighter',color:'#112233',width:20,points:[{x:0,y:0,t:0,pressure:1},{x:100,y:0,t:1,pressure:1}]};
+ assert.equal(eraseStrokes([s],{x:50,y:12},{x:50,y:12},3,'stroke').length,0);
+ assert.equal(eraseStrokes([s],{x:50,y:14},{x:50,y:14},3,'stroke')[0],s);
+});
+test('cutout coordinates roundtrip across zoom and all rotations',()=>{
+ const original={...line('cut'),pageNumber:1,erasures:[{radius:9,points:[{x:60,y:70},{x:90,y:120}]}]};
+ for(const rotation of [0,90,180,270]){
+  const page=pageModel(rotation);
+  const viewport=page.getViewport({scale:2.3,rotation});
+  const restored=toPdfStroke(toViewportStroke(original,viewport),1,viewport);
+  assert.ok(Math.abs(restored.erasures![0].radius-9)<1e-8);
+  restored.erasures![0].points.forEach((p,i)=>{assert.ok(Math.abs(p.x-original.erasures[0].points[i].x)<1e-8);assert.ok(Math.abs(p.y-original.erasures[0].points[i].y)<1e-8);});
+ }
+});
+test('invalid cutout data is refused instead of silently restoring erased ink',()=>{
+ const good:PdfAnnotationFile={version:2,kind:'pdf',coordinateSpace:'pdf-user-space',sourcePath:'test.pdf',sourceMtime:1,pageCount:1,strokes:[{...line('cut'),pageNumber:1,erasures:[{radius:5,points:[{x:1,y:2}]}]}],pdfTextAnnotations:[],updatedAt:1};
+ assert.deepEqual(validatePdfAnnotation(good,'test.pdf',1),good);
+ for(const erasures of [null,[{radius:NaN,points:[{x:1,y:2}]}],[{radius:5,points:[]}],[{radius:5,points:[{x:Infinity,y:2}]}]]){
+  const bad=structuredClone(good);(bad.strokes[0] as any).erasures=erasures;assert.throws(()=>validatePdfAnnotation(bad,'test.pdf',1));
+ }
+});

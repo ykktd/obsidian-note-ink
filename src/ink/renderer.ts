@@ -100,7 +100,7 @@ export function drawStrokeTail(ctx:CanvasRenderingContext2D,stroke:InkStroke,opa
 }
 
 export function drawStroke(ctx:CanvasRenderingContext2D,stroke:InkStroke):void {
-  if(stroke.tool!=='highlighter') {drawStrokeSegment(ctx,stroke,0);drawStrokeTail(ctx,stroke);return;}
+  if(stroke.tool!=='highlighter' && !stroke.erasures?.length) {drawStrokeSegment(ctx,stroke,0);drawStrokeTail(ctx,stroke);return;}
   if(!stroke.points.length)return;
   // Use the same opaque segment mask for live ink and export. Apply translucency once,
   // including at self-intersections and segment joins.
@@ -118,7 +118,13 @@ export function drawStroke(ctx:CanvasRenderingContext2D,stroke:InkStroke):void {
     const mc=mask.getContext('2d');if(!mc)throw new Error('Unable to create highlighter mask');
     mc.setTransform(m.a,m.b,m.c,m.d,m.e-left,m.f-top);
     drawStrokeSegment(mc,stroke,0,true);drawStrokeTail(mc,stroke,true);
-    ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=.35;ctx.globalCompositeOperation='multiply';ctx.drawImage(mask,left,top);ctx.restore();
+    mc.globalCompositeOperation='destination-out';mc.globalAlpha=1;mc.lineCap='round';mc.lineJoin='round';
+    for(const erase of stroke.erasures??[]){
+      mc.lineWidth=erase.radius*2;mc.beginPath();
+      if(erase.points.length===1){const p=erase.points[0];mc.arc(p.x,p.y,erase.radius,0,Math.PI*2);mc.fill();}
+      else {erase.points.forEach((p,i)=>i?mc.lineTo(p.x,p.y):mc.moveTo(p.x,p.y));mc.stroke();}
+    }
+    ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=stroke.tool==='highlighter'?.35:1;ctx.globalCompositeOperation=stroke.tool==='highlighter'?'multiply':'source-over';ctx.drawImage(mask,left,top);ctx.restore();
   } finally {mask.width=mask.height=0;}
 
 }

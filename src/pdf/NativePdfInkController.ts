@@ -2,19 +2,18 @@ import { InkEngine } from "../ink/InkEngine";
 import { StrokeHistory, strokeChange, applyStrokeChange, sameStroke, type StrokeChange } from "../ink/StrokeHistory";
 import { drawStrokes, setupCanvas } from "../ink/renderer";
 import type { InkStroke, InkToolState, PdfAnnotationFile, PdfInkStroke } from "../ink/types";
-import { invertMatrix, transformPoint, type Matrix } from "./exportAnnotatedPdf";
 import { toPdfStroke, toViewportStroke, pdfMarkShapes, type PdfViewport } from "./pdfCoordinates";
 import type { NativePageView, NativePdfBinding } from "./NativePdfViewer";
 
-type Layer={page:NativePageView;el:HTMLDivElement;svg:SVGSVGElement;object:SVGForeignObjectElement;marks:SVGGElement;canvas:HTMLCanvasElement;revision:number;dpr:number};
+type Layer={page:NativePageView;el:HTMLDivElement;canvas:HTMLCanvasElement;marks:SVGSVGElement;revision:number;rotation:number};
 type Input={page:NativePageView;viewport:PdfViewport;engine:InkEngine;committed:HTMLCanvasElement;live:HTMLCanvasElement;width:number;height:number;reference:readonly InkStroke[]};
 type Options={onChange():void;onInputStart():void;onInputEnd():void;onDocumentChanged():void};
-const defaults:InkToolState={tool:"pen",color:"#111111",width:2,highlighterColor:"#ffd54a",highlighterWidth:14,eraserRadius:18,acceptTouchInput:false};
+const defaults:InkToolState={tool:"pen",color:"#111111",width:2,highlighterColor:"#ffd54a",highlighterWidth:14,eraserRadius:18,eraserMode:"partial",acceptTouchInput:false};
 const events=["pagerendered","pagechanging","pagesinit","scalechanging","rotationchanging"];
 
 /** One input engine; only annotated pages near the native viewport own display canvases. */
 export class NativePdfInkController {
-  private state={...defaults};
+  private state:InkToolState={...defaults};
   private enabled=true;
   private history=new StrokeHistory();
   private layers=new Map<number,Layer>();
@@ -25,6 +24,7 @@ export class NativePdfInkController {
   private disposed=false;
   private applying=false;
   private penPage:HTMLElement|null=null;
+  private cursor:HTMLDivElement|null=null;
   private readonly doc:Document;
   private readonly win:Window;
   // Useful for regression checks without timing noise from the PDF renderer.
@@ -37,13 +37,21 @@ export class NativePdfInkController {
     this.observer.observe(binding.viewer.viewer,{subtree:true,childList:true});
     binding.viewer.container.addEventListener("scroll",this.onScroll,{passive:true});
     this.win.addEventListener("pointerdown",this.preparePointer,true);
+    this.win.addEventListener("pointermove",this.showCursor,true);
+    this.win.addEventListener("pointerup",this.hideCursor,true);
+    this.win.addEventListener("pointercancel",this.hideCursor,true);
+    this.win.addEventListener("blur",this.hideCursor);
+    this.binding.viewer.container.addEventListener("pointerleave",this.hideCursor);
     this.win.addEventListener("touchstart",this.prepareTouch,{capture:true,passive:true});
+    this.win.addEventListener("touchmove",this.touchCursor,{capture:true,passive:true});
+    this.win.addEventListener("touchend",this.hideCursor,true);
+    this.win.addEventListener("touchcancel",this.hideCursor,true);
     this.queueSync();
   }
   getStrokes():PdfInkStroke[]{return structuredClone(this.annotation.strokes);}
   getToolState():InkToolState{return {...this.state};}
-  setToolState(patch:Partial<InkToolState>):void{this.state={...this.state,...patch};this.input?.engine.setToolState(patch);}
-  setInputEnabled(enabled:boolean):void{this.enabled=enabled;if(!enabled){this.releaseInput();this.restorePenPage();}}
+  setToolState(patch:Partial<InkToolState>):void{this.hideCursor();this.state={...this.state,...patch};this.input?.engine.setToolState(patch);}
+  setInputEnabled(enabled:boolean):void{this.enabled=enabled;if(!enabled){this.hideCursor();this.releaseInput();this.restorePenPage();}}
   isInputActive():boolean{return this.input?.engine.isInputActive()??false;}
   flushPendingStrokes():void{this.input?.engine.flushPendingStrokes();}
   canUndo():boolean{return this.history.canUndo;}
@@ -68,17 +76,26 @@ export class NativePdfInkController {
     this.observer.disconnect();for(const name of events)this.binding.eventBus.off(name,this.onViewerEvent);
     this.binding.viewer.container.removeEventListener("scroll",this.onScroll);
     this.win.removeEventListener("pointerdown",this.preparePointer,true);
+    this.win.removeEventListener("pointermove",this.showCursor,true);
+    this.win.removeEventListener("pointerup",this.hideCursor,true);
+    this.win.removeEventListener("pointercancel",this.hideCursor,true);
+    this.win.removeEventListener("blur",this.hideCursor);
+    this.binding.viewer.container.removeEventListener("pointerleave",this.hideCursor);this.hideCursor();
     this.win.removeEventListener("touchstart",this.prepareTouch,true);
+    this.win.removeEventListener("touchmove",this.touchCursor,true);
+    this.win.removeEventListener("touchend",this.hideCursor,true);
+    this.win.removeEventListener("touchcancel",this.hideCursor,true);
     for(const layer of this.layers.values())this.removeLayer(layer);this.layers.clear();
   }
   private invalidate(n:number):void{this.revisions.set(n,(this.revisions.get(n)??0)+1);}
   private onViewerEvent=(data?:any):void=>{
+    this.hideCursor();
     if(this.binding.viewer.pdfDocument!==this.binding.pdf){this.enabled=false;this.releaseInput();this.options.onDocumentChanged();return;}
     // The captured viewport belongs to the engine, even if native pages were already reset.
     if(data?.scale!==undefined||data?.pagesRotation!==undefined||this.input&&!this.input.live.isConnected)this.releaseInput();
     this.queueSync();
   };
-  private onScroll=():void=>{if(!this.isInputActive())this.releaseInput();this.queueSync();};
+  private onScroll=():void=>{this.hideCursor();if(!this.isInputActive())this.releaseInput();this.queueSync();};
   private queueSync():void{
     if(this.disposed||this.raf!==null)return;
     this.raf=this.win.requestAnimationFrame(()=>{this.raf=null;this.sync();});
@@ -87,7 +104,9 @@ export class NativePdfInkController {
     if(this.disposed||this.binding.viewer.pdfDocument!==this.binding.pdf)return;
     if(this.input&&(!this.input.live.isConnected||this.input.viewport.rotation!==this.input.page.viewport.rotation))this.releaseInput();
     const box=this.binding.viewer.container.getBoundingClientRect(),wanted=new Set<number>();
-    for(const page of this.binding.viewer.getCachedPageViews()){
+    for(const div of this.binding.viewer.viewer.querySelectorAll<HTMLElement>(".page[data-page-number]")){
+      const page=this.binding.viewer.getPageView(Number(div.dataset.pageNumber)-1);
+      if(!page||page.div!==div)continue;
       if(!page.pdfPage)continue;const rect=page.div.getBoundingClientRect();
       if(rect.bottom<box.top-100||rect.top>box.bottom+100)continue;
       if(!this.annotation.strokes.some(s=>s.pageNumber===page.id)&&!this.annotation.pdfTextAnnotations.some(a=>a.pageNumber===page.id))continue;
@@ -97,31 +116,31 @@ export class NativePdfInkController {
   }
   private updateLayer(page:NativePageView):void{
     let layer=this.layers.get(page.id);
+    if(layer && layer.page!==page){this.removeLayer(layer);this.layers.delete(page.id);layer=undefined;}
     if(!layer){
-      const el=this.doc.createElement("div");el.className="note-ink-native-overlay";el.setAttribute("aria-hidden","true");
-      const svg=this.doc.createElementNS("http://www.w3.org/2000/svg","svg"),object=this.doc.createElementNS(svg.namespaceURI,"foreignObject") as SVGForeignObjectElement,marks=this.doc.createElementNS(svg.namespaceURI,"g") as SVGGElement,canvas=this.doc.createElement("canvas");
-      svg.setAttribute("preserveAspectRatio","none");object.append(canvas);svg.append(marks,object);el.append(svg);
-      layer={page,el,svg,object,marks,canvas,revision:-1,dpr:0};this.layers.set(page.id,layer);
+      const el=this.doc.createElement("div"),canvas=this.doc.createElement("canvas");
+      el.className="note-ink-native-overlay";el.setAttribute("aria-hidden","true");
+      el.dataset.pageNumber=String(page.id);
+      const marks=this.doc.createElementNS("http://www.w3.org/2000/svg","svg");marks.setAttribute("preserveAspectRatio","none");el.append(marks,canvas);
+      layer={page,el,canvas,marks,revision:-1,rotation:NaN};this.layers.set(page.id,layer);
     }
     if(layer.el.parentElement!==page.div)page.div.append(layer.el);
-    const base=page.pdfPage!.getViewport({scale:1,rotation:0}),rotated=page.pdfPage!.getViewport({scale:1,rotation:page.viewport.rotation});
-    layer.svg.setAttribute("viewBox",`0 0 ${rotated.width} ${rotated.height}`);
-    layer.object.setAttribute("width",String(base.width));layer.object.setAttribute("height",String(base.height));
-    layer.object.setAttribute("transform",`matrix(${multiply(rotated.transform,invertMatrix(base.transform)).join(" ")})`);
-    layer.marks.setAttribute("transform",layer.object.getAttribute("transform")!);
+    const viewport=page.pdfPage!.getViewport({scale:1,rotation:page.viewport.rotation});
     const revision=this.revisions.get(page.id)??0;
-    // Zooming stretches the existing bitmap. Reallocate only when ink changes or a layer is new.
-    if(layer.revision!==revision){
+    // Keep all painting in a page-local HTML canvas. A canvas in SVG foreignObject
+    // is composited at the wrong origin/scale in WebKit, unlike the live HTML canvas.
+    if(layer.revision!==revision || layer.rotation!==viewport.rotation){
       const dpr=Math.max(.25,Math.min(3,page.viewport.scale*(this.win.devicePixelRatio||1)));
-      const ctx=setupCanvas(layer.canvas,base.width,base.height,{maxDpr:dpr,maxPixels:1_000_000});
-      layer.marks.replaceChildren();
-      for(const mark of this.annotation.pdfTextAnnotations.filter(a=>a.pageNumber===page.id))for(const r of pdfMarkShapes(mark,page.pdfPage!,base)){
-        const rect=this.doc.createElementNS(layer.svg.namespaceURI,"rect");
-        for(const [key,value]of Object.entries(r))rect.setAttribute(key,String(value));rect.setAttribute("fill",mark.color);
-        rect.setAttribute("opacity",mark.kind==="underline"||mark.kind==="strikethrough"?".86":".42");layer.marks.append(rect);
+      const ctx=setupCanvas(layer.canvas,viewport.width,viewport.height,{maxDpr:dpr,maxPixels:1_000_000});
+      layer.canvas.style.width=layer.canvas.style.height="100%";
+      layer.marks.setAttribute("viewBox",`0 0 ${viewport.width} ${viewport.height}`);layer.marks.replaceChildren();
+      for(const mark of this.annotation.pdfTextAnnotations.filter(a=>a.pageNumber===page.id))for(const r of pdfMarkShapes(mark,page.pdfPage!,viewport)){
+        const rect=this.doc.createElementNS(layer.marks.namespaceURI,"rect");
+        for(const [key,value]of Object.entries(r))rect.setAttribute(key,String(value));
+        rect.setAttribute("fill",mark.color);rect.setAttribute("opacity",mark.kind==="underline"||mark.kind==="strikethrough"?".86":".42");layer.marks.append(rect);
       }
-      drawStrokes(ctx,this.annotation.strokes.filter(s=>s.pageNumber===page.id).map(s=>toViewportStroke(s,base)));
-      layer.revision=revision;layer.dpr=dpr;this.diagnostics.displayRenders++;
+      drawStrokes(ctx,this.annotation.strokes.filter(s=>s.pageNumber===page.id).map(s=>toViewportStroke(s,viewport)));
+      layer.revision=revision;layer.rotation=viewport.rotation;this.diagnostics.displayRenders++;
     }
     layer.canvas.style.visibility=this.input?.page.id===page.id?"hidden":"visible";
   }
@@ -133,6 +152,16 @@ export class NativePdfInkController {
     const n=Number(div.dataset.pageNumber),page=this.binding.viewer.getPageView(n-1);
     return page?.pdfPage&&page.div===div?page:null;
   }
+  private hideCursor=():void=>{this.cursor?.remove();this.cursor=null;};
+  private showCursor=(event:Pick<PointerEvent,"pointerType"|"target"|"clientX"|"clientY">):void=>{
+    if(!this.enabled||this.state.tool!=="eraser"||!["pen","mouse"].includes(event.pointerType)){this.hideCursor();return;}
+    const page=this.pageForTarget(event.target);if(!page){this.hideCursor();return;}
+    const r=page.div.getBoundingClientRect(),v=page.pdfPage!.getViewport({scale:1,rotation:page.viewport.rotation});
+    if(!this.cursor){this.cursor=this.doc.createElement("div");this.cursor.className="note-ink-eraser-cursor";this.cursor.setAttribute("aria-hidden","true");}
+    if(this.cursor.parentElement!==page.div)page.div.append(this.cursor);
+    this.cursor.style.left=`${(event.clientX-r.left)/r.width*100}%`;this.cursor.style.top=`${(event.clientY-r.top)/r.height*100}%`;
+    this.cursor.style.width=`${this.state.eraserRadius*2/v.width*100}%`;this.cursor.style.height=`${this.state.eraserRadius*2/v.height*100}%`;
+  };
   private preparePenPage=(event:PointerEvent):void=>{
     if(!this.enabled||event.pointerType!=="pen")return;
     const page=this.pageForTarget(event.target);if(!page)return;
@@ -142,14 +171,18 @@ export class NativePdfInkController {
   private preparePointer=(event:PointerEvent):void=>{
     if(!this.enabled||!["pen","mouse"].includes(event.pointerType)||event.button!==0)return;
     const page=this.pageForTarget(event.target);if(!page)return;
-    this.mountInput(page);this.preparePenPage(event);
+    this.mountInput(page);this.preparePenPage(event);this.showCursor(event);
+  };
+  private touchCursor=(event:TouchEvent):void=>{
+    const touch=event.changedTouches.item(0) as Touch&{touchType?:string}|null;
+    if(touch?.touchType==="stylus"&&event.touches.length===1)this.showCursor({pointerType:"pen",target:touch.target,clientX:touch.clientX,clientY:touch.clientY});else this.hideCursor();
   };
   private prepareTouch=(event:TouchEvent):void=>{
     if(!this.enabled)return;
     if(event.touches.length>1){this.releaseInput();this.restorePenPage();return;}
     const touch=event.changedTouches.item(0) as Touch&{touchType?:string}|null;
     if(touch?.touchType!=="stylus")return;
-    const page=this.pageForTarget(touch.target);if(page)this.mountInput(page);
+    const page=this.pageForTarget(touch.target);if(page){this.mountInput(page);this.touchCursor(event);}
   };
   private mountInput(page:NativePageView):void{
     if(this.input?.page===page&&this.input.live.isConnected&&this.input.viewport.rotation===page.viewport.rotation)return;
@@ -168,7 +201,7 @@ export class NativePdfInkController {
   private localStrokes(input:Input):InkStroke[]{
     return this.annotation.strokes.filter(s=>s.pageNumber===input.page.id).map(s=>{
       const local=toViewportStroke(s,input.viewport);
-      return {...local,points:local.points.map(p=>({...p,x:p.x*input.width/input.viewport.width,y:p.y*input.height/input.viewport.height}))};
+      return {...local,erasures:local.erasures?.map(e=>({...e,points:e.points.map(p=>({x:p.x*input.width/input.viewport.width,y:p.y*input.height/input.viewport.height}))})),points:local.points.map(p=>({...p,x:p.x*input.width/input.viewport.width,y:p.y*input.height/input.viewport.height}))};
     });
   }
   private commitInput():void{
@@ -178,9 +211,9 @@ export class NativePdfInkController {
     const after=input.engine.getStrokeRefs().map(s=>reference.has(s.id)&&sameStroke(reference.get(s.id)!,s)&&original.has(s.id)?original.get(s.id)!:toPdfStroke(s,input.page.id,input.viewport,input.width,input.height));
     input.reference=[...input.engine.getStrokeRefs()];
     const change=strokeChange(before,after);if(!change.added.length&&!change.removed.length)return;
-    const removed=new Set(change.removed.map(e=>e.stroke.id));
-    const next=this.annotation.strokes.filter(s=>!removed.has(s.id));
-    for(const {stroke}of change.added){const index=next.findIndex(s=>s.id===stroke.id);if(index<0)next.push(stroke as PdfInkStroke);else next[index]=stroke as PdfInkStroke;}
+    const updated=new Map(after.map(s=>[s.id,s]));
+    const next=this.annotation.strokes.flatMap(s=>s.pageNumber!==input.page.id?[s]:updated.has(s.id)?[updated.get(s.id)!]:[]);
+    for(const stroke of after)if(!original.has(stroke.id))next.push(stroke);
     this.history.record(strokeChange(this.annotation.strokes,next));this.annotation.strokes=next;
     this.invalidate(input.page.id);this.options.onChange();this.queueSync();
   }
@@ -195,4 +228,3 @@ export class NativePdfInkController {
     this.layers.get(input.page.id)?.canvas.style.setProperty("visibility","visible");this.diagnostics.inputReleases++;this.restorePenPage();
   }
 }
-function multiply(a:Matrix,b:Matrix):Matrix{return [a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];}

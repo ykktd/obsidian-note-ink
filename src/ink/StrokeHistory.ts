@@ -5,6 +5,8 @@ export type StrokeChange = { removed: IndexedStroke[]; added: IndexedStroke[] };
 
 export function sameStroke(a: InkStroke, b: InkStroke): boolean {
   if (a === b) return true;
+  const ae=a.erasures??[],be=b.erasures??[];
+  if(ae!==be && (ae.length!==be.length || ae.some((e,i)=>e.radius!==be[i].radius || e.points.length!==be[i].points.length || e.points.some((p,j)=>p.x!==be[i].points[j].x||p.y!==be[i].points[j].y))))return false;
   return a.id === b.id && a.tool === b.tool && a.color === b.color && a.width === b.width
     && a.points.length === b.points.length && a.points.every((p,i) => {
       const q = b.points[i];

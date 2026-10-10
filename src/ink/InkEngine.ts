@@ -1,4 +1,5 @@
-import { distancePointToSegmentSquared, distanceSquared, drawStroke, drawStrokeSegment, drawStrokeTail, drawStrokes, setupCanvas } from "./renderer";
+import { distanceSquared, drawStroke, drawStrokeSegment, drawStrokeTail, drawStrokes, setupCanvas } from "./renderer";
+import { eraseStrokes } from "./eraser";
 import { StrokeHistory, strokeChange, applyStrokeChange } from "./StrokeHistory";
 import { InkEngineOptions, InkPoint, InkStroke, InkToolState } from "./types";
 
@@ -56,6 +57,7 @@ export class InkEngine {
   private debugMoveCounter = 0;
   private sampleTime = 0;
   private eraserChanged = false;
+  private lastErasePoint: InkPoint | null = null;
   private inputEnabled = true;
   private displayScale = 1;
   private toolState: InkToolState = { ...DEFAULT_TOOL_STATE };
@@ -410,7 +412,7 @@ export class InkEngine {
     if (this.isEventFromToolbar(event)) return;
     if (!this.inputEnabled) return;
     if (!this.isEventInsideAnnotation(event)) return;
-    const canvasTouches = Array.from(event.touches).filter(touch => !(touch.target instanceof Element && touch.target.closest(".mobile-ink-quick-eraser")));
+    const canvasTouches = Array.from(event.touches);
     if (canvasTouches.length > 1) {
       if (this.activeTouchId !== null || (this.options.nativeScroll && this.activePointerId !== null)) {
         this.finishInterruptedInput();
@@ -450,6 +452,7 @@ export class InkEngine {
     if (this.toolState.tool === "eraser") {
         this.eraserChanged = false;
       this.eraserBefore=this.strokes;
+      this.lastErasePoint=null;
       this.eraseAtTouch(touch, event);
       return;
     }
@@ -505,6 +508,7 @@ export class InkEngine {
     event.stopPropagation();
 
     if (this.toolState.tool === "eraser") {
+      this.eraseAtTouch(touch,event);
       this.finishTouchEraser();
       return;
     }
@@ -606,6 +610,7 @@ export class InkEngine {
     if (this.toolState.tool === "eraser") {
         this.eraserChanged = false;
       this.eraserBefore=this.strokes;
+      this.lastErasePoint=null;
       this.eraseAtEvent(event);
       return;
     }
@@ -959,7 +964,7 @@ export class InkEngine {
     const target = event.target;
     if (!(target instanceof Element)) return false;
 
-    if (target.closest(".mobile-ink-toolbar, .mobile-ink-quick-eraser, .mobile-ink-pdf-page-nav")) return true;
+    if (target.closest(".mobile-ink-toolbar, .mobile-ink-pdf-page-nav")) return true;
 
     if (target.closest(".mobile-ink-object-control, .mobile-ink-object-resize-handle, .mobile-ink-object-delete")) {
       return true;
@@ -1178,14 +1183,14 @@ export class InkEngine {
   }
 
   private eraseAtPoint(point: InkPoint): boolean {
-    const radiusSq = this.toolState.eraserRadius * this.toolState.eraserRadius;
-    const before = this.strokes.length;
-
-    this.strokes = this.strokes.filter((stroke) => !strokeIntersectsCircle(stroke, point.x, point.y, radiusSq));
-    return this.strokes.length !== before;
+    const previous=this.strokes;
+    this.strokes=eraseStrokes(previous,this.lastErasePoint??point,point,this.toolState.eraserRadius,this.toolState.eraserMode??"stroke");
+    this.lastErasePoint=point;
+    return previous.length!==this.strokes.length||previous.some((s,i)=>s!==this.strokes[i]);
   }
 
   private finishEraser(event: PointerEvent): void {
+    this.eraseAtEvent(event);
     event.preventDefault();
     event.stopPropagation();
 
@@ -1333,28 +1338,7 @@ export class InkEngine {
 function cloneStrokes(strokes: InkStroke[]): InkStroke[] {
   return strokes.map((stroke) => ({
     ...stroke,
+    erasures:stroke.erasures?.map(e=>({...e,points:e.points.map(p=>({...p}))})),
     points: stroke.points.map((point) => ({ ...point }))
   }));
-}
-
-function strokeIntersectsCircle(stroke: InkStroke, cx: number, cy: number, radiusSq: number): boolean {
-  const points = stroke.points;
-  if (points.length === 0) return false;
-
-  if (points.length === 1) {
-    const p = points[0];
-    const dx = p.x - cx;
-    const dy = p.y - cy;
-    return dx * dx + dy * dy <= radiusSq;
-  }
-
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i];
-    const b = points[i + 1];
-    if (distancePointToSegmentSquared(cx, cy, a.x, a.y, b.x, b.y) <= radiusSq) {
-      return true;
-    }
-  }
-
-  return false;
 }

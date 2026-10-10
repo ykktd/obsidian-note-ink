@@ -14,42 +14,7 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Keep the thumb modifier outside the scrolling/zooming page. */
-.mobile-ink-root button.mobile-ink-quick-eraser {
-  position: absolute;
-  left: max(8px, env(safe-area-inset-left));
-  top: 45%;
-  z-index: 29;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  box-sizing: border-box;
-  width: 72px;
-  height: 64px;
-  margin: 0;
-  padding: 6px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 14px;
-  background: var(--background-primary);
-  color: var(--text-normal);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 16%);
-  touch-action: none;
-  -webkit-touch-callout: none;
-}
-.mobile-ink-quick-eraser > * { pointer-events: none; }
-.mobile-ink-quick-eraser svg { width: 22px; height: 22px; }
-.mobile-ink-quick-eraser-label { font-size: 10px; white-space: nowrap; }
-.mobile-ink-root button.mobile-ink-quick-eraser[aria-pressed="true"] {
-  border: 2px solid var(--interactive-accent);
-  background: var(--interactive-accent);
-  color: var(--text-on-accent, white);
-}
-.mobile-ink-root button.mobile-ink-quick-eraser:focus-visible {
-  outline: 3px solid var(--interactive-accent);
-  outline-offset: 3px;
-}
+
 
 .mobile-ink-root,
 .mobile-ink-root * {
@@ -2521,9 +2486,8 @@ input.mobile-ink-pdf-page-input {
 
 /* Native PDF integration: no ancestor blocks finger scroll or the viewer's pinch handlers. */
 .note-ink-native-host { position: relative; }
-.note-ink-native-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
-.note-ink-native-overlay svg { display: block; width: 100%; height: 100%; overflow: hidden; }
-.note-ink-native-overlay canvas { display: block; }
+.note-ink-native-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; contain: paint; }
+.note-ink-native-overlay canvas { display: block; width: 100%; height: 100%; }
 .note-ink-native-live, .note-ink-native-committed { position: absolute; inset: 0; pointer-events: none; z-index: 6; touch-action: auto; }
 .note-ink-native-live { z-index: 7; }
 .pdfViewer .page.note-ink-pen-contact { touch-action: none; }
@@ -2533,6 +2497,31 @@ input.mobile-ink-pdf-page-input {
 .note-ink-native-tools input[type="color"] { width: 36px; height: 36px; min-width: 36px; padding: 2px; }
 .note-ink-native-width { display: flex; align-items: center; gap: 4px; font-size: 12px; }
 .note-ink-native-width input { width: 54px; height: 36px; padding: 4px; }
-.note-ink-native-tools button:focus-visible, .note-ink-native-quick:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
-button.note-ink-native-quick { position: absolute; left: max(8px, env(safe-area-inset-left)); top: 45%; z-index: 29; width: 72px; height: 64px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border-radius: 14px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); touch-action: none; }
-button.note-ink-native-quick[aria-pressed="true"] { background: var(--interactive-accent); color: var(--text-on-accent, white); }
+.note-ink-native-tools button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+
+/* The native viewer is not inside .mobile-ink-root: explicitly size its icons. */
+.note-ink-native-tools { width: max-content; max-width: calc(100% - 20px); }
+.note-ink-native-tools .mobile-ink-toolbar-dock { gap: 6px; }
+.note-ink-native-tools button.mobile-ink-icon-button { width: 44px; height: 44px; flex: 0 0 44px; min-width: 44px; padding: 0; }
+.note-ink-native-tools .mobile-ink-icon-button svg { display: block; width: 24px; height: 24px; min-width: 24px; min-height: 24px; flex: none; }
+.note-ink-native-width { flex: 0 0 auto; gap: 8px; }
+.note-ink-native-width input[type="range"] { width: 128px; height: 44px; padding: 0; margin: 0; }
+.note-ink-native-width output { min-width: 28px; font-variant-numeric: tabular-nums; }
+.note-ink-eraser-modes { margin: 6px 0 0 auto; padding: 4px 12px 8px; width: max-content; max-width: 100%; border: 1px solid var(--background-modifier-border); border-radius: 14px; background: var(--background-primary); }
+.note-ink-eraser-modes legend { font-size: 12px; padding: 0 4px; }
+.note-ink-eraser-modes label { display: inline-flex; align-items: center; min-height: 36px; gap: 6px; margin-right: 12px; }
+.note-ink-eraser-modes[hidden] { display: none; }
+.note-ink-native-overlay > svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.note-ink-native-overlay > canvas { position: absolute; inset: 0; }
+.note-ink-eraser-cursor { position: absolute; z-index: 8; pointer-events: none; border: 1px solid #888; border-radius: 50%; box-sizing: border-box; transform: translate(-50%, -50%); }
+.note-ink-native-width input[type="range"] { appearance: none; -webkit-appearance: none; background: transparent; border: 0; box-shadow: none; }
+.note-ink-native-width input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: var(--background-modifier-border); }
+.note-ink-native-width input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -8px; border-radius: 50%; border: 1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow: 0 1px 3px #0003; }
+.note-ink-native-width input[type="range"]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--background-modifier-border); }
+.note-ink-native-width input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+.note-ink-native-width input:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+/* Override mobile host button states as a unit, including their inherited icon colour. */
+.note-ink-native-host .note-ink-native-tools button.mobile-ink-icon-button { border: 0; background: var(--background-secondary); color: var(--text-normal); --icon-color: currentColor; box-shadow: inset 0 0 0 1px var(--background-modifier-border); }
+.note-ink-native-host .note-ink-native-tools button.mobile-ink-icon-button[aria-pressed="true"] { background: var(--interactive-accent); color: var(--text-on-accent); }
+.note-ink-native-host .note-ink-native-tools button.mobile-ink-icon-button svg { color: inherit; stroke: currentColor; fill: none; opacity: 1; }
+.note-ink-native-width input[type="range"]::-webkit-slider-thumb { top: 0; transform: none; }
