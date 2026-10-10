@@ -2555,3 +2555,6 @@ input.mobile-ink-pdf-page-input {
 .note-ink-lasso-transforming .note-ink-native-overlay > canvas { visibility:hidden !important; }
 .note-ink-lasso-overlay button.note-ink-lasso-handle { background:#fff; color:#222; --icon-color:currentColor; }
 .note-ink-lasso-overlay .note-ink-lasso-handle svg { color:inherit; stroke:currentColor; fill:none; opacity:1; }
+/* Small visible squares, with an unchanged transparent touch target. */
+.note-ink-lasso-overlay button.note-ink-lasso-corner { width:28px; height:28px; min-width:28px; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.note-ink-lasso-corner::after { content:""; width:10px; height:10px; box-sizing:border-box; border:1.5px solid var(--interactive-accent); border-radius:2px; background:#fff; transform:rotate(var(--lasso-angle,0rad)); pointer-events:none; }

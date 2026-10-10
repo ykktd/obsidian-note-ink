@@ -60,7 +60,17 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]].filter(([n
    assert.ok(Math.abs((corner.startsWith('n')?a.t:a.b)-(corner.startsWith('n')?b.t:b.b))<.01);
    await page.getByRole('button',{name:'元に戻す',exact:true}).click();
  }
- await dragHandle('scale-se',25,15);await dragHandle('rotate',30,10);const handled=await strokes();assert.notDeepEqual(handled,moved);assert.deepEqual(handled.slice(2),before.slice(2));
+ await dragHandle('scale-se',25,15);await dragHandle('rotate',30,10);
+ const angle=Number(await page.locator('.note-ink-lasso-overlay').getAttribute('data-angle'));assert.ok(Math.abs(angle)>.05);
+ const polygon=await page.locator('.note-ink-lasso-bounds').first().getAttribute('points');const corners=polygon.split(' ').map(p=>p.split(',').map(Number));assert.ok(Math.abs(corners[1][1]-corners[0][1])>1);
+ await page.screenshot({path:`${output}/${name}-rotated-frame.png`});
+ const beforeCorner=await page.locator('.note-ink-lasso-bounds').first().getAttribute('points');
+ await dragHandle('scale-se',12,8);const afterCorner=await page.locator('.note-ink-lasso-bounds').first().getAttribute('points');
+ const fixedBefore=beforeCorner.split(' ')[0].split(',').map(Number),fixedAfter=afterCorner.split(' ')[0].split(',').map(Number);assert.ok(Math.hypot(fixedBefore[0]-fixedAfter[0],fixedBefore[1]-fixedAfter[1])<.01);
+ assert.ok(Math.abs(Number(await page.locator('.note-ink-lasso-overlay').getAttribute('data-angle'))-angle)<1e-9);
+ const rotateSaved=await strokes(),moveBox=await page.locator('.note-ink-lasso-move').boundingBox(),mx=moveBox.x+moveBox.width/2,my=moveBox.y+moveBox.height/2;
+ await page.mouse.move(mx,my);await page.mouse.down();await page.mouse.move(mx+20,my+10,{steps:3});await page.keyboard.press('Escape');await page.mouse.up();assert.deepEqual(await strokes(),rotateSaved);
+ const handled=await strokes();assert.notDeepEqual(handled,moved);assert.deepEqual(handled.slice(2),before.slice(2));
  const pixels=await page.evaluate(()=>window.nativeHarness.lassoExport());assert.ok(pixels[0][0]>160&&pixels[0][1]<130,JSON.stringify(pixels));assert.ok(!(pixels[1][0]>160&&pixels[1][1]<130),JSON.stringify(pixels));
  await page.getByRole('button',{name:'選択した書き込みをコピー',exact:true}).click();
  // Native right-click pastes centred at the specified page point.
@@ -90,6 +100,22 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]].filter(([n
  assert.equal(await page.locator('.note-ink-lasso-panel').count(),0);
  await page.keyboard.press('Escape');assert.equal(await page.locator('.note-ink-lasso-overlay').count(),0);
  await page.getByRole('button',{name:'ペン',exact:true}).click();
+ // Dense page: the gesture rasterizes once, retains controls, and commits only on release.
+ await page.setViewportSize({width:1024,height:900});
+ await page.evaluate(()=>{const h=window.nativeHarness;h.viewer.pagesRotation=0;h.viewer.currentScale=1.7;h.viewer.currentPageNumber=1;h.viewer.container.scrollTop=0;h.viewer.update();h.session.controller.replaceStrokes(Array.from({length:300},(_,i)=>({id:`dense-${i}`,pageNumber:1,tool:i%10===0?'highlighter':'pen',color:'#3344aa',width:1.5,points:Array.from({length:60},(_,j)=>({x:(i<200?70:270)+j*(i<200?100:20)/59,y:(i<200?180:80)+i%40*.8+Math.sin(j/5),t:j*8,pressure:.6}))})));});
+ await page.waitForTimeout(150);await page.getByRole('button',{name:'投げ縄選択',exact:true}).click();await gesture([[50,235],[190,235],[190,170],[50,170],[50,235]]);
+ const perf=await page.evaluate(async()=>{
+   const h=window.nativeHarness,lasso=h.session.lasso,start={...lasso.diagnostics},original=h.session.controller.annotation.strokes;
+   const p=h.point(1,120,200),target=document.querySelector('.note-ink-lasso-move'),root=target.closest('.page'),control=document.querySelector('[data-lasso-handle="scale-nw"]');
+   const send=(type,x,y)=>root.dispatchEvent(new PointerEvent(type,{view:window,bubbles:true,cancelable:true,pointerType:'pen',pointerId:334,button:0,buttons:type==='pointerup'?0:1,clientX:x,clientY:y}));
+   target.dispatchEvent(new PointerEvent('pointerdown',{view:window,bubbles:true,cancelable:true,pointerType:'pen',pointerId:334,button:0,buttons:1,clientX:p.x,clientY:p.y}));
+   const costs=[];for(let f=1;f<=12;f++){const t=performance.now();for(let i=1;i<=30;i++)send('pointermove',p.x+f*2+i/30,p.y+f);costs.push(performance.now()-t);await new Promise(r=>requestAnimationFrame(r));}
+   const during={...lasso.diagnostics},stable=control===document.querySelector('[data-lasso-handle="scale-nw"]'),unchanged=original===h.session.controller.annotation.strokes;
+   send('pointerup',p.x+25,p.y+12);return {builds:during.previewBuilds-start.previewBuilds,frames:during.previewFrames-start.previewFrames,commitsDuring:during.geometryCommits-start.geometryCommits,commitsAfter:lasso.diagnostics.geometryCommits-start.geometryCommits,stable,unchanged,handlerMs:costs.sort((a,b)=>a-b)[6]};
+ });
+ assert.equal(perf.builds,1);assert.ok(perf.frames<=12&&perf.frames>0);assert.equal(perf.commitsDuring,0);assert.equal(perf.commitsAfter,1);assert.ok(perf.stable&&perf.unchanged);
+ const corner=await page.locator('.note-ink-lasso-corner').first().evaluate(el=>({target:el.getBoundingClientRect().width,visible:getComputedStyle(el,'::after').width}));assert.equal(corner.target,28);assert.equal(corner.visible,'10px');
+ await page.screenshot({path:`${output}/${name}-dense-selection.png`});
  await page.evaluate(()=>window.nativeHarness.session.close());assert.equal(await page.locator('.note-ink-lasso-overlay').count(),0);assert.deepEqual(errors,[]);
- console.log(JSON.stringify({browser:name,passed:true,fourCorners:true,drag:true,longPressPaste:true,pastePosition:true,outsideTap:true,undo:true,reload:true,errors}));await browser.close();
+ console.log(JSON.stringify({browser:name,passed:true,fourCorners:true,drag:true,longPressPaste:true,pastePosition:true,outsideTap:true,undo:true,reload:true,perf,errors}));await browser.close();
 }}finally{for(const b of browsers)await b.close();server.close();}
