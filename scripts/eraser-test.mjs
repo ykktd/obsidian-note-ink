@@ -22,7 +22,7 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]]){
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.nativeReady);await page.evaluate(()=>window.nativeHarness.open());
  await page.evaluate(()=>{const h=window.nativeHarness;h.viewer.currentScale=1.5;h.viewer.container.scrollTop=0;h.viewer.update();h.session.controller.annotation.pdfTextAnnotations=[];h.session.controller.replaceStrokes([1,2].map(n=>({id:`line-${n}`,pageNumber:n,tool:n===1?'pen':'highlighter',color:'#ff00ff',width:16,points:Array.from({length:23},(_,i)=>({x:60+i*10,y:150,t:i*10,pressure:1}))})));});await page.waitForTimeout(350);
  assert.equal(await page.locator('.note-ink-native-quick').count(),0);
- const sizes=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.map(b=>({button:b.getBoundingClientRect().width,icon:b.querySelector('svg').getBoundingClientRect().width})));assert.ok(sizes.every(s=>s.button>=44&&s.icon===24),JSON.stringify(sizes));
+ const sizes=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.filter(b=>b.getClientRects().length).map(b=>({button:b.getBoundingClientRect().width,icon:b.querySelector('svg').getBoundingClientRect().width})));assert.ok(sizes.every(s=>s.button>=44&&s.icon===24),JSON.stringify(sizes));
  const slider=page.locator('.note-ink-native-width input');await slider.focus();await page.keyboard.press('ArrowRight');assert.equal(await page.evaluate(()=>window.nativeHarness.session.controller.getToolState().width),2.5);
  await page.locator('button[aria-label="消しゴム"]').click();assert.equal(await page.getByLabel('部分消去',{exact:true}).isChecked(),true);
  await slider.fill('12');await slider.dispatchEvent('input');
@@ -34,7 +34,7 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]]){
  const isInk=p=>p[0]>220&&p[1]<60&&p[2]>220;
  const partial=await pixels();assert.ok(isInk(partial[0])&&!isInk(partial[1])&&isInk(partial[2]),JSON.stringify(partial));
  assert.equal(await page.evaluate(()=>window.nativeHarness.session.controller.getStrokes().filter(s=>s.erasures?.length).length),1);
- const colours=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.map(b=>({pressed:b.getAttribute('aria-pressed'),background:getComputedStyle(b).backgroundColor,colour:getComputedStyle(b.querySelector('svg')).color})));
+ const colours=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.filter(b=>b.getClientRects().length).map(b=>({pressed:b.getAttribute('aria-pressed'),background:getComputedStyle(b).backgroundColor,colour:getComputedStyle(b.querySelector('svg')).color})));
  const active=colours.find(b=>b.pressed==='true');assert.ok(active&&active.background!==colours[0].background&&active.colour!==active.background,JSON.stringify(colours));
  await page.locator('button[aria-label="元に戻す"]').click();assert.ok((await pixels()).every(isInk));
  await page.locator('button[aria-label="やり直す"]').click();assert.deepEqual(await pixels(),partial);
@@ -56,6 +56,6 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]]){
  await page.locator('button[aria-label="元に戻す"]').click();await page.waitForTimeout(150);await page.screenshot({path:`${output}/${name}-new-tools.png`});
  await page.evaluate(()=>{document.body.classList.replace('theme-light','theme-dark');});await page.waitForTimeout(150);await page.screenshot({path:`${output}/${name}-dark-tools.png`});
  await page.evaluate(()=>{document.body.classList.replace('theme-dark','theme-light');});
- await page.setViewportSize({width:390,height:844});await page.waitForTimeout(150);await page.screenshot({path:`${output}/${name}-narrow-tools.png`});const narrow=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.map(b=>b.getBoundingClientRect().width));assert.ok(narrow.every(w=>w>=44));
+ await page.setViewportSize({width:390,height:844});await page.waitForTimeout(150);await page.screenshot({path:`${output}/${name}-narrow-tools.png`});const narrow=await page.locator('.note-ink-native-tools button').evaluateAll(bs=>bs.filter(b=>b.getClientRects().length).map(b=>b.getBoundingClientRect().width));assert.ok(narrow.every(w=>w>=44));
  assert.deepEqual(errors,[]);await writeFile(`${output}/${name}-eraser-checks.json`,JSON.stringify({sizes,colours,ring,partial,saved,exported,fallback,narrow,errors},null,2));console.log(JSON.stringify({name,partialErase:true,undoRedo:true,saveReload:true,export:true,sizes,ring}));await browser.close();
 }}finally{for(const b of browsers)await b.close();server.close();}
