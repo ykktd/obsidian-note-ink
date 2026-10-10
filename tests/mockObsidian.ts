@@ -25,7 +25,8 @@ export class FileView {
 export class Notice {el:HTMLElement;constructor(message:string,timeout=4000){this.el=create(document.body,'div',{cls:'notice',text:message});if(timeout)setTimeout(()=>this.hide(),timeout);}setMessage(message:string){this.el.textContent=message;}hide(){this.el.remove();}}
 export class Menu {
  items:any[]=[];addItem(fn:any){const item:any={title:'',disabled:false,callback:null,setTitle(v:string){this.title=v;return this;},setIcon(){return this;},setDisabled(v:boolean){this.disabled=v;return this;},setChecked(){return this;},onClick(fn:any){this.callback=fn;return this;}};fn(item);this.items.push(item);return this;}
- addSeparator(){}showAtMouseEvent(){const menu=create(document.body,'div',{cls:'test-menu'});for(const item of this.items){const b=create(menu,'button',{text:item.title});(b as HTMLButtonElement).disabled=item.disabled;b.onclick=()=>{menu.remove();item.callback?.();};}}
+ el:HTMLElement|null=null; hide(){this.el?.remove();} showAtPosition(position:{x:number;y:number}){this.showAtMouseEvent();this.el!.style.left=position.x+'px';this.el!.style.top=position.y+'px';}
+ addSeparator(){}showAtMouseEvent(){const menu=create(document.body,'div',{cls:'test-menu'});this.el=menu;for(const item of this.items){const b=create(menu,'button',{text:item.title});(b as HTMLButtonElement).disabled=item.disabled;b.onclick=()=>{menu.remove();item.callback?.();};}}
 }
 export class Modal {contentEl=create(document.body,'div',{cls:'modal-content'});constructor(public app:any){}open(){(this as any).onOpen?.();}close(){this.contentEl.remove();}}
 export class Setting {}
@@ -37,6 +38,9 @@ export function setIcon(el:HTMLElement,icon:string){
  const paths:Record<string,string>={
   'grip-vertical':'M9 4v1 M9 11v1 M9 18v1 M15 4v1 M15 11v1 M15 18v1',
   'lasso-select':'M7 15a7 5 0 1 1 10-1 M7 15a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M5 17c0 4 7 5 9 0 M14 10l7 3-4 2-2 4z',
+  'copy':'M9 9h12v12H9z M5 15H3V3h12v2',
+  'trash-2':'M3 6h18 M5 6l1 15h12l1-15 M9 6V3h6v3 M10 10v7 M14 10v7',
+  'rotate-cw':'M20 5v5h-5 M20 10a8 8 0 1 0 0 6',
   'minus':'M5 12h14',
   'panel-top-open':'M3 3h18v18H3z M3 8h18 M9 15l3-3 3 3',
   'save':'M5 3h12l4 4v14H3V3z M7 3v6h10V3 M7 21v-8h10v8',

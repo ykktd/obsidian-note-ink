@@ -71,7 +71,6 @@ export class NativePdfAnnotationSession {
     }
     this.tools.append(this.eraserModes);
     this.lasso=new NativePdfLasso(binding,this.controller,()=>this.app.workspace.activeLeaf?.view===this.binding.view);
-    this.tools.append(this.lasso.panel);
     button("undo","undo-2","元に戻す",()=>this.controller.undo());button("redo","redo-2","やり直す",()=>this.controller.redo());
     button("save","save","注釈を保存",()=>{void this.save().catch(()=>{});});
     this.floatingToolbar=new FloatingInkToolbar(content,this.tools,dock,this.eraserModes,this.buttons.get("eraser")!);
@@ -116,8 +115,7 @@ export class NativePdfAnnotationSession {
     this.buttons.get("lasso")!.setAttribute("aria-pressed",String(this.lassoMode));this.buttons.get("lasso")!.classList.toggle("mobile-ink-active",this.lassoMode);
     this.buttons.get("undo")!.disabled=!this.controller.canUndo();this.buttons.get("redo")!.disabled=!this.controller.canRedo();
     this.color.value=state.tool==="highlighter"?state.highlighterColor:state.color;this.color.disabled=this.lassoMode||state.tool==="eraser";
-    this.floatingToolbar?.setPanel(this.lassoMode?this.lasso.panel:this.eraserModes,this.buttons.get(this.lassoMode?"lasso":"eraser")!);
-    this.floatingToolbar?.setPanelVisible(this.lassoMode||state.tool==="eraser");
+    this.floatingToolbar?.setPanelVisible(!this.lassoMode&&state.tool==="eraser");
     for(const radio of this.eraserModes.querySelectorAll<HTMLInputElement>("input"))radio.checked=radio.value===state.eraserMode;
     this.width.disabled=this.lassoMode;
     this.width.setAttribute("aria-label",state.tool==="eraser"?"消しゴムの大きさ":"太さ");

@@ -2543,9 +2543,15 @@ input.mobile-ink-pdf-page-input {
 .note-ink-lasso-path { stroke: var(--interactive-accent); stroke-width: 2; stroke-dasharray: 5 4; fill: var(--interactive-accent); fill-opacity: .08; }
 .note-ink-lasso-bounds { stroke: var(--interactive-accent); stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; }
 .note-ink-lasso-overlay button.note-ink-lasso-handle { position: absolute; width: 36px; height: 36px; min-width: 36px; padding: 0; transform: translate(-50%, -50%); border: 2px solid var(--interactive-accent); border-radius: 50%; background: var(--background-primary); color: var(--text-normal); font-size: 24px; pointer-events: auto; touch-action: pan-x pan-y pinch-zoom; }
-.note-ink-native-tools .note-ink-lasso-panel { position: absolute; width: 320px; box-sizing: border-box; padding: 12px; margin: 0; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 14px; background: var(--background-primary); color: var(--text-normal); box-shadow: var(--shadow-s, 0 2px 8px #0003); font-size: 13px; }
-.note-ink-lasso-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 6px 0 10px; white-space: normal; }
-.note-ink-lasso-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
-.note-ink-native-tools .note-ink-lasso-actions button { min-height: 44px; height: auto; white-space: normal; font-size: 12px; padding: 6px; }
-.note-ink-lasso-directions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
-.note-ink-lasso-delete { grid-column: 1 / -1; }
+/* Selection controls live on the page; no lasso options panel. */
+.note-ink-lasso-move { position:absolute; pointer-events:auto; touch-action:none; cursor:move; background:transparent; }
+.note-ink-lasso-overlay button.note-ink-lasso-handle { width:40px; height:40px; min-width:40px; touch-action:none; display:flex; align-items:center; justify-content:center; }
+.note-ink-lasso-handle svg { width:20px; height:20px; }
+.note-ink-lasso-overlay button.note-ink-lasso-corner { width:28px; height:28px; min-width:28px; border-radius:6px; cursor:nwse-resize; }
+.note-ink-lasso-overlay button[data-lasso-handle="scale-ne"], .note-ink-lasso-overlay button[data-lasso-handle="scale-sw"] { cursor:nesw-resize; }
+.note-ink-lasso-corner svg { display:none; }
+.note-ink-lasso-overlay :focus-visible { outline:2px solid var(--interactive-accent); outline-offset:3px; }
+
+.note-ink-lasso-transforming .note-ink-native-overlay > canvas { visibility:hidden !important; }
+.note-ink-lasso-overlay button.note-ink-lasso-handle { background:#fff; color:#222; --icon-color:currentColor; }
+.note-ink-lasso-overlay .note-ink-lasso-handle svg { color:inherit; stroke:currentColor; fill:none; opacity:1; }

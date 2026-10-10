@@ -52,13 +52,6 @@ export class FloatingInkToolbar {
     this.layout();
   }
 
-  setPanel(panel: HTMLElement, anchor: HTMLElement): void {
-    if (panel === this.panel) return;
-    this.panel.hidden = true; this.observer.unobserve(this.panel);
-    this.panel = panel; this.anchor = anchor; this.observer.observe(panel);
-    this.layout();
-  }
-
   setPanelVisible(visible: boolean): void {
     this.panelRequested = visible;
     this.layout();
