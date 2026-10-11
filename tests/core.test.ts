@@ -227,3 +227,61 @@ test('rotation snaps to cardinal angles with a stable release band',()=>{
  }
  assert.equal(snapRotation(rad(45)).angle,rad(45));
 });
+
+import {migrateLegacyPluginData,PLUGIN_ID,LEGACY_PLUGIN_ID} from '../src/pluginMigration';
+function migrationFixture(config='.obsidian'){
+ const source=`${config}/plugins/${LEGACY_PLUGIN_ID}`,target=`${config}/plugins/${PLUGIN_ID}`;
+ const files=new Map<string,string>([[`${source}/data.json`,'{"openPdfWithAnnotationByDefault":true}'],[`${source}/annotations/資料.a.ink.json`,'{"strokes":["original"],"comment":"preserved"}'],[`${source}/annotations/nested/old.bak`,'backup'],[`${source}/manifest.json`,'old manifest']]);
+ const folders=new Set([config,`${config}/plugins`,source,`${source}/annotations`,`${source}/annotations/nested`,target]);
+ const calls:string[]=[];let fail=false;
+ const adapter={exists:async(p:string)=>files.has(p)||folders.has(p),mkdir:async(p:string)=>{folders.add(p);},read:async(p:string)=>{if(!files.has(p))throw new Error('missing');return files.get(p)!;},write:async(p:string,raw:string)=>{if(fail&&p.includes('.ink.json'))throw new Error('disk full');files.set(p,raw);},list:async(p:string)=>({files:[...files.keys()].filter(k=>k.startsWith(p+'/')&&!k.slice(p.length+1).includes('/')),folders:[...folders].filter(k=>k.startsWith(p+'/')&&!k.slice(p.length+1).includes('/'))}),rename:async(from:string,to:string)=>{for(const [p,raw]of [...files])if(p===from||p.startsWith(from+'/')){files.set(to+p.slice(from.length),raw);files.delete(p);}for(const p of [...folders])if(p===from||p.startsWith(from+'/')){folders.add(to+p.slice(from.length));folders.delete(p);}}};
+ const previous={pdfSessions:new Map([['one',{close:async()=>{calls.push('flush PDF');}}]])};
+ const view={plugin:previous,flushCurrentWork:async()=>{calls.push('flush Markdown');}};
+ const app:any={vault:{configDir:config,adapter},workspace:{getLeavesOfType:()=>[{view}]},plugins:{plugins:{[LEGACY_PLUGIN_ID]:previous},enabledPlugins:new Set([LEGACY_PLUGIN_ID]),disablePluginAndSave:async(id:string)=>{calls.push('disable');delete app.plugins.plugins[id];app.plugins.enabledPlugins.delete(id);}}};
+ return {app,plugin:{manifest:{id:PLUGIN_ID,dir:target}} as any,files,folders,source,target,calls,setFail:(v:boolean)=>{fail=v;}};
+}
+test('plugin ID migration flushes both editors, copies settings and nested annotations, then archives originals',async()=>{
+ const f=migrationFixture('.custom-config');const originals=new Map(f.files);
+ await migrateLegacyPluginData(f.app,f.plugin);
+ assert.deepEqual(f.calls,['flush PDF','flush Markdown','disable']);
+ for(const [p,raw]of originals){assert.equal(f.files.get(p.replace(f.source,`.custom-config/note-ink-backups/${LEGACY_PLUGIN_ID}`)),raw);if(!p.endsWith('manifest.json'))assert.equal(f.files.get(p.replace(f.source,f.target)),raw);}
+ assert.equal(f.folders.has(f.source),false);assert.ok(f.files.has(`${f.target}/legacy-data-migrated.json`));
+ await migrateLegacyPluginData(f.app,f.plugin);assert.equal(f.calls.length,3);
+});
+test('migration retains newer destination settings and annotations without overwriting the old backup',async()=>{
+ const f=migrationFixture();f.files.set(`${f.target}/data.json`,'{"openPdfWithAnnotationByDefault":false}');f.files.set(`${f.target}/annotations/資料.a.ink.json`,'newer writing');
+ await migrateLegacyPluginData(f.app,f.plugin);
+ assert.equal(f.files.get(`${f.target}/annotations/資料.a.ink.json`),'newer writing');assert.equal(f.files.get(`${f.target}/data.json`),'{"openPdfWithAnnotationByDefault":false}');
+ assert.ok(f.files.get(`.obsidian/note-ink-backups/${LEGACY_PLUGIN_ID}/annotations/資料.a.ink.json`)?.includes('original'));
+});
+test('interrupted migration leaves originals intact and resumes without a premature completion marker',async()=>{
+ const f=migrationFixture();f.setFail(true);await assert.rejects(migrateLegacyPluginData(f.app,f.plugin),/disk full/);
+ assert.ok(f.files.has(`${f.source}/annotations/資料.a.ink.json`));assert.equal(f.files.has(`${f.target}/legacy-data-migrated.json`),false);
+ f.setFail(false);await migrateLegacyPluginData(f.app,f.plugin);assert.ok(f.files.has(`${f.target}/annotations/資料.a.ink.json`));assert.equal(f.folders.has(f.source),false);
+});
+test('a completed migration does not resurrect annotations later deleted from the new installation',async()=>{
+ const f=migrationFixture();f.files.set(`${f.target}/legacy-data-migrated.json`,JSON.stringify({from:LEGACY_PLUGIN_ID}));
+ await migrateLegacyPluginData(f.app,f.plugin);assert.equal(f.files.has(`${f.target}/annotations/資料.a.ink.json`),false);
+});
+test('failed final save aborts migration before disabling or copying any data',async()=>{
+ const f=migrationFixture();f.app.plugins.plugins[LEGACY_PLUGIN_ID].pdfSessions.set('one',{close:async()=>{throw new Error('save failed');}});
+ await assert.rejects(migrateLegacyPluginData(f.app,f.plugin),/save failed/);assert.deepEqual(f.calls,[]);assert.ok(f.folders.has(f.source));assert.equal(f.files.has(`${f.target}/data.json`),false);
+});
+test('migration updates command shortcuts and mobile ribbon preferences while preserving backups and newer shortcuts',async()=>{
+ const f=migrationFixture();const keys={[`${LEGACY_PLUGIN_ID}:export-annotated-pdf`]:['old'],[`${PLUGIN_ID}:export-annotated-pdf`]:['new'],[`${LEGACY_PLUGIN_ID}:open-mobile-ink-annotation`]:['keep'],unrelated:['same']};
+ f.files.set('.obsidian/hotkeys.json',JSON.stringify(keys));f.files.set('.obsidian/workspace-mobile.json',JSON.stringify({ribbon:{hiddenItems:{[`${LEGACY_PLUGIN_ID}:手書き注釈を開く`]:false}}}));f.app.hotkeyManager={customKeys:keys};
+ await migrateLegacyPluginData(f.app,f.plugin);
+ assert.deepEqual(f.app.hotkeyManager.customKeys,{[`${PLUGIN_ID}:export-annotated-pdf`]:['new'],[`${PLUGIN_ID}:open-mobile-ink-annotation`]:['keep'],unrelated:['same']});
+ assert.ok(f.files.get('.obsidian/workspace-mobile.json')?.includes(`${PLUGIN_ID}:手書き注釈を開く`));assert.equal(f.files.get('.obsidian/note-ink-backups/hotkeys.json.before-note-ink-migration.bak'),JSON.stringify(keys));
+});
+test('a partially written annotation copy is never installed and a retry restores the exact original',async()=>{
+ const f=migrationFixture();const write=f.app.vault.adapter.write;let first=true;
+ f.app.vault.adapter.write=async(p:string,s:string)=>{if(first&&p.includes('.ink.json')){first=false;f.files.set(p,'partial');throw new Error('interrupted');}await write(p,s);};
+ const raw=f.files.get(`${f.source}/annotations/資料.a.ink.json`);
+ await assert.rejects(migrateLegacyPluginData(f.app,f.plugin),/interrupted/);assert.equal(f.files.has(`${f.target}/annotations/資料.a.ink.json`),false);
+ await migrateLegacyPluginData(f.app,f.plugin);assert.equal(f.files.get(`${f.target}/annotations/資料.a.ink.json`),raw);
+});
+test('an interrupted completion marker is retried before archiving the source',async()=>{
+ const f=migrationFixture();f.files.set(`${f.target}/legacy-data-migrated.json`,'{partial');await migrateLegacyPluginData(f.app,f.plugin);
+ assert.ok(f.files.has(`${f.target}/annotations/資料.a.ink.json`));assert.equal(JSON.parse(f.files.get(`${f.target}/legacy-data-migrated.json`)!).from,LEGACY_PLUGIN_ID);
+});

@@ -2536,6 +2536,10 @@ input.mobile-ink-pdf-page-input {
 .note-ink-native-tools .note-ink-eraser-modes { position: absolute; margin: 0; padding: 8px 12px; max-width: none; min-width: 0; box-sizing: border-box; overflow: auto; box-shadow: var(--shadow-s, 0 2px 8px #0003); }
 .note-ink-eraser-modes label { min-height: 44px; white-space: nowrap; }
 .note-ink-native-tools [hidden] { display: none !important; }
+.note-ink-native-tools .note-ink-text-tools { display: flex; gap: 6px; flex: 0 0 auto; }
+.note-ink-native-tools button.note-ink-text-select { width: auto; flex-basis: auto; gap: 6px; padding: 0 12px; border-radius: 22px; white-space: nowrap; }
+.note-ink-text-select span { font-size: 12px; }
+.note-ink-text-mode .textLayer, .note-ink-text-mode .textLayer span { user-select: text; -webkit-user-select: text; }
 .note-ink-native-tools[data-minimized="true"] { padding: 6px; box-sizing: border-box; border: 1px solid var(--background-modifier-border); border-radius: 50%; background: var(--background-primary); box-shadow: var(--shadow-s, 0 2px 8px #0003); }
 
 .note-ink-lasso-overlay { position: absolute; inset: 0; z-index: 9; pointer-events: none; }

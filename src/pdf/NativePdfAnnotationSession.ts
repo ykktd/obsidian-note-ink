@@ -1,4 +1,4 @@
-import { Menu, Modal, Notice, setIcon, type App, type WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, setIcon, type App, type WorkspaceLeaf } from "obsidian";
 import { FloatingInkToolbar } from "../ui/FloatingInkToolbar";
 import { SaveQueue } from "../ink/SaveQueue";
 import type { StrokeStore } from "../ink/StrokeStore";
@@ -11,6 +11,9 @@ import { transformRect } from "./pdfCoordinates";
 import { exportNativePdf } from "./exportNativePdf";
 import { saveExportCopy } from "./saveExportCopy";
 
+type TextSelection = Omit<PdfTextAnnotation,"id"|"kind"|"color"|"createdAt">[];
+const textMarks = [["highlight","ハイライトを付ける","highlighter"],["underline","下線を引く","underline"],["strikethrough","取り消し線を引く","strikethrough"]] as const;
+
 export class NativePdfAnnotationSession {
   readonly controller:NativePdfInkController;
   private raw:string|null;
@@ -19,6 +22,9 @@ export class NativePdfAnnotationSession {
   private floatingToolbar:FloatingInkToolbar;
   private buttons=new Map<string,HTMLButtonElement>();
   private lassoMode=false;
+  private textMode=false;
+  private textTools:HTMLElement;
+  private selectionForAction:TextSelection=[];
   private lasso:NativePdfLasso;
   private drawingTool:InkTool="pen";
   private width:HTMLInputElement;
@@ -55,8 +61,17 @@ export class NativePdfAnnotationSession {
       const b=this.doc.createElement("button");b.type="button";b.className="mobile-ink-icon-button";b.setAttribute("aria-label",label);b.title=label;setIcon(b,icon);b.addEventListener("click",action);dock.append(b);this.buttons.set(key,b);return b;
     };
     button("pen","pencil","ペン",()=>this.setTool("pen"));button("highlighter","highlighter","蛍光ペン",()=>this.setTool("highlighter"));button("eraser","eraser","消しゴム",()=>this.setTool("eraser"));
-    button("lasso","lasso-select","投げ縄選択",()=>{this.controller.flushPendingStrokes();this.lassoMode=true;this.controller.setInputEnabled(false);this.lasso.setEnabled(true);this.refresh();});
-    this.color=this.doc.createElement("input");this.color.type="color";this.color.setAttribute("aria-label","色");this.color.title="色";this.color.addEventListener("input",()=>{const state=this.controller.getToolState();this.controller.setToolState(state.tool==="highlighter"?{highlighterColor:this.color.value}:{color:this.color.value});});dock.append(this.color);
+    button("lasso","lasso-select","投げ縄選択",()=>{this.controller.flushPendingStrokes();this.textMode=false;this.binding.view.contentEl.classList.remove("note-ink-text-mode");this.lassoMode=true;this.controller.setInputEnabled(false);this.lasso.setEnabled(true);this.refresh();});
+    const select=button("text","text-select","文字選択",()=>this.setTextMode(!this.textMode));
+    const label=this.doc.createElement("span");label.textContent="文字選択";select.append(label);select.classList.add("note-ink-text-select");
+    this.textTools=this.doc.createElement("div");this.textTools.className="note-ink-text-tools";this.textTools.setAttribute("role","group");this.textTools.setAttribute("aria-label","選択した文字に印を付ける");dock.append(this.textTools);
+    for(const [kind,title,icon] of textMarks){
+      const b=button(`text-${kind}`,icon,title,()=>{const selected=this.selectionForAction.length?this.selectionForAction:this.selection();this.selectionForAction=[];this.addTextMark(kind,selected);});
+      this.textTools.append(b);
+      b.addEventListener("pointerdown",event=>{this.selectionForAction=this.selection();event.preventDefault();});
+      b.addEventListener("pointercancel",()=>{this.selectionForAction=[];this.refreshTextSelection();});
+    }
+    this.color=this.doc.createElement("input");this.color.type="color";this.color.setAttribute("aria-label","色");this.color.title="色";this.color.addEventListener("input",()=>{const state=this.controller.getToolState();this.controller.setToolState(this.textMode||state.tool==="highlighter"?{highlighterColor:this.color.value}:{color:this.color.value});});dock.append(this.color);
     const widthLabel=this.doc.createElement("label");widthLabel.className="note-ink-native-width";widthLabel.append("太さ");this.width=this.doc.createElement("input");this.width.type="range";this.width.min=".5";this.width.max="72";this.width.step=".5";this.width.setAttribute("aria-label","太さ");this.widthValue=this.doc.createElement("output");widthLabel.append(this.width,this.widthValue);dock.append(widthLabel);
     this.width.addEventListener("input",()=>{const value=Number(this.width.value),state=this.controller.getToolState();if(!Number.isFinite(value)||value<.5||value>72){this.refresh();return;}this.controller.setToolState(state.tool==="eraser"?{eraserRadius:value}:state.tool==="highlighter"?{highlighterWidth:value}:{width:value});this.refresh();});
     this.eraserModes=this.doc.createElement("div");this.eraserModes.className="note-ink-eraser-modes";
@@ -79,6 +94,8 @@ export class NativePdfAnnotationSession {
     }
     binding.viewer.container.addEventListener("contextmenu",this.onContextMenu,true);
     this.doc.addEventListener("keydown",this.onKeyDown,true);
+    this.doc.addEventListener("selectionchange",this.refreshTextSelection);
+    this.doc.addEventListener("pointerdown",this.clearSelectionAction,true);
     this.originalUnload=binding.view.onUnloadFile;this.originalClose=binding.view.onClose;
     const session=this;
     this.unloadHook=async function(this:any,...args:any[]){await session.close();return session.originalUnload?.apply(this,args);};
@@ -99,23 +116,47 @@ export class NativePdfAnnotationSession {
     if(this.disposed)return;this.disposed=true;this.floatingToolbar.destroy();this.lasso.destroy();this.controller.destroy();this.queue.setPaused(true);
     this.tools.remove();for(const action of this.actions)action.remove();this.errorEl?.remove();
     this.binding.viewer.container.removeEventListener("contextmenu",this.onContextMenu,true);this.doc.removeEventListener("keydown",this.onKeyDown,true);
+    this.doc.removeEventListener("selectionchange",this.refreshTextSelection);this.doc.removeEventListener("pointerdown",this.clearSelectionAction,true);
     if(this.binding.view.onUnloadFile===this.unloadHook)this.binding.view.onUnloadFile=this.originalUnload;
     if(this.binding.view.onClose===this.closeHook)this.binding.view.onClose=this.originalClose;
-    this.binding.view.contentEl.classList.remove("note-ink-native-host");
+    this.binding.view.contentEl.classList.remove("note-ink-native-host","note-ink-text-mode");
   }
   private setTool(tool:InkTool):void{
     this.controller.flushPendingStrokes();
-    if(tool==="eraser"&&!this.lassoMode&&this.controller.getToolState().tool==="eraser")tool=this.drawingTool;
+    if(tool==="eraser"&&!this.lassoMode&&!this.textMode&&this.controller.getToolState().tool==="eraser")tool=this.drawingTool;
     if(tool!=="eraser")this.drawingTool=tool;
+    if(this.textMode)this.doc.getSelection()?.removeAllRanges();
+    this.textMode=false;this.selectionForAction=[];this.binding.view.contentEl.classList.remove("note-ink-text-mode");
     this.lassoMode=false;this.lasso.setEnabled(false);this.controller.setInputEnabled(true);this.controller.setToolState({tool});this.refresh();
+  }
+  private setTextMode(enabled:boolean):void{
+    this.controller.flushPendingStrokes();this.textMode=enabled;this.selectionForAction=[];this.lassoMode=false;this.lasso.setEnabled(false);
+    if(!enabled)this.doc.getSelection()?.removeAllRanges();
+    this.controller.setInputEnabled(!enabled);this.binding.view.contentEl.classList.toggle("note-ink-text-mode",enabled);
+    this.refresh();
+  }
+  private clearSelectionAction=():void=>{this.selectionForAction=[];};
+  private refreshTextSelection=():void=>{
+    if(this.disposed)return;
+    const selected=this.selectionForAction.length?this.selectionForAction:this.selection();
+    for(const [kind] of textMarks)this.buttons.get(`text-${kind}`)!.disabled=!selected.length;
+  };
+  private addTextMark(kind:typeof textMarks[number][0],selected:TextSelection):void{
+    if(!selected.length||this.disposed)return;
+    const color=this.controller.getToolState().highlighterColor;
+    this.controller.annotation.pdfTextAnnotations.push(...selected.map(a=>({...a,id:crypto.randomUUID(),kind,color,createdAt:Date.now()})));
+    this.controller.annotationsChanged(selected.map(a=>a.pageNumber));this.queue.markDirty();this.doc.getSelection()?.removeAllRanges();this.refreshTextSelection();
   }
   private refresh():void{
     if(this.disposed||!this.buttons.size)return;const state=this.controller.getToolState();
-    for(const tool of ["pen","highlighter","eraser"]){const b=this.buttons.get(tool)!;b.classList.toggle("mobile-ink-active",!this.lassoMode&&state.tool===tool);b.setAttribute("aria-pressed",String(!this.lassoMode&&state.tool===tool));}
+    for(const tool of ["pen","highlighter","eraser"]){const b=this.buttons.get(tool)!;b.classList.toggle("mobile-ink-active",!this.lassoMode&&!this.textMode&&state.tool===tool);b.setAttribute("aria-pressed",String(!this.lassoMode&&!this.textMode&&state.tool===tool));}
+    this.buttons.get("text")!.setAttribute("aria-pressed",String(this.textMode));this.textTools.hidden=!this.textMode;
+    for(const tool of ["highlighter","eraser","lasso"])this.buttons.get(tool)!.hidden=this.textMode;
+    this.width.parentElement!.hidden=this.textMode;this.refreshTextSelection();
     this.buttons.get("lasso")!.setAttribute("aria-pressed",String(this.lassoMode));this.buttons.get("lasso")!.classList.toggle("mobile-ink-active",this.lassoMode);
     this.buttons.get("undo")!.disabled=!this.controller.canUndo();this.buttons.get("redo")!.disabled=!this.controller.canRedo();
-    this.color.value=state.tool==="highlighter"?state.highlighterColor:state.color;this.color.disabled=this.lassoMode||state.tool==="eraser";
-    this.floatingToolbar?.setPanelVisible(!this.lassoMode&&state.tool==="eraser");
+    this.color.value=this.textMode||state.tool==="highlighter"?state.highlighterColor:state.color;this.color.disabled=this.lassoMode||!this.textMode&&state.tool==="eraser";
+    this.floatingToolbar?.setPanelVisible(!this.lassoMode&&!this.textMode&&state.tool==="eraser");
     for(const radio of this.eraserModes.querySelectorAll<HTMLInputElement>("input"))radio.checked=radio.value===state.eraserMode;
     this.width.disabled=this.lassoMode;
     this.width.setAttribute("aria-label",state.tool==="eraser"?"消しゴムの大きさ":"太さ");
@@ -149,42 +190,45 @@ export class NativePdfAnnotationSession {
     if(event.key.toLowerCase()==="z"){event.preventDefault();event.stopPropagation();event.shiftKey?this.controller.redo():this.controller.undo();}
     if(event.key.toLowerCase()==="s"){event.preventDefault();event.stopPropagation();void this.save().catch(()=>{});}
   };
-  private selection():Omit<PdfTextAnnotation,"id"|"kind"|"color"|"createdAt">[]{
+  private selection():TextSelection{
     const selection=this.doc.getSelection();if(!selection||selection.isCollapsed||!selection.rangeCount)return [];
     const range=selection.getRangeAt(0);if(!this.binding.viewer.viewer.contains(range.commonAncestorContainer))return [];
-    const result:Omit<PdfTextAnnotation,"id"|"kind"|"color"|"createdAt">[]=[];
+    const result:TextSelection=[];
     for(const page of this.binding.viewer.getCachedPageViews()){
-      if(!page.pdfPage||!page.canvas)continue;const box=page.canvas.getBoundingClientRect(),rects:PdfTextAnnotationRect[]=[];
-      for(const r of range.getClientRects()){
+      const layer=page.div.querySelector(".textLayer");
+      if(!page.pdfPage||!page.canvas||!layer)continue;const box=page.canvas.getBoundingClientRect(),rects:PdfTextAnnotationRect[]=[],text:string[]=[];
+      if(!box.width||!box.height)continue;
+      // A range across spans includes parent boxes as well. Measure only selected
+      // text fragments, so adjusting either endpoint marks exactly those letters.
+      const walker=this.doc.createTreeWalker(layer,4);let node:Node|null;
+      while((node=walker.nextNode())){
+        if(!range.intersectsNode(node))continue;
+        const fragment=this.doc.createRange();fragment.selectNodeContents(node);
+        if(range.startContainer===node)fragment.setStart(node,range.startOffset);
+        if(range.endContainer===node)fragment.setEnd(node,range.endOffset);
+        if(fragment.collapsed)continue;text.push(fragment.toString());
+        for(const r of fragment.getClientRects()){
         const x=Math.max(r.left,box.left),y=Math.max(r.top,box.top),right=Math.min(r.right,box.right),bottom=Math.min(r.bottom,box.bottom);
         if(right<=x||bottom<=y)continue;
         rects.push(transformRect({x:(x-box.left)*page.viewport.width/box.width,y:(y-box.top)*page.viewport.height/box.height,width:(right-x)*page.viewport.width/box.width,height:(bottom-y)*page.viewport.height/box.height},invertMatrix(page.viewport.transform)));
+        }
       }
-      if(rects.length)result.push({pageNumber:page.id,rotation:page.viewport.rotation,text:selection.toString(),rects});
+      if(rects.length)result.push({pageNumber:page.id,rotation:page.viewport.rotation,text:text.join(" "),rects});
     }
     return result;
   }
   private onContextMenu=(event:MouseEvent):void=>{
     const selected=this.selection(),target=(event.target as Element)?.closest?.(".page[data-page-number]"),n=Number((target as HTMLElement)?.dataset.pageNumber);
+    // Keep native long-press selection and its range handles available. Applying a
+    // mark is explicit in the toolbar, rather than opening a menu while selecting.
+    if(this.textMode&&selected.length)return;
     const page=n?this.binding.viewer.getPageView(n-1):null,box=page?.canvas?.getBoundingClientRect();
     let hit:PdfTextAnnotation|undefined;
-    if(page&&box){const [x,y]=transformPoint(invertMatrix(page.viewport.transform),(event.clientX-box.left)*page.viewport.width/box.width,(event.clientY-box.top)*page.viewport.height/box.height);hit=this.controller.annotation.pdfTextAnnotations.find(a=>a.pageNumber===n&&a.rects.some(r=>x>=r.x&&x<=r.x+r.width&&y>=r.y&&y<=r.y+r.height));}
+    if(page&&box){const [x,y]=transformPoint(invertMatrix(page.viewport.transform),(event.clientX-box.left)*page.viewport.width/box.width,(event.clientY-box.top)*page.viewport.height/box.height);hit=this.controller.annotation.pdfTextAnnotations.find(a=>a.kind!=="note"&&a.pageNumber===n&&a.rects.some(r=>x>=r.x&&x<=r.x+r.width&&y>=r.y&&y<=r.y+r.height));}
     if(!selected.length&&!hit)return;event.preventDefault();event.stopPropagation();const menu=new Menu();
-    if(selected.length){for(const [kind,label,icon]of [["highlight","ハイライトを付ける","highlighter"],["underline","下線を引く","underline"],["strikethrough","取り消し線を引く","strikethrough"],["note","コメントを付ける","message-square"]] as const)menu.addItem(item=>item.setTitle(label).setIcon(icon).onClick(()=>{
-      const create=(note?:string)=>{const color=this.controller.getToolState().highlighterColor;this.controller.annotation.pdfTextAnnotations.push(...selected.map(a=>({...a,id:crypto.randomUUID(),kind,color,note,createdAt:Date.now()})));this.controller.annotationsChanged(selected.map(a=>a.pageNumber));this.queue.markDirty();this.doc.getSelection()?.removeAllRanges();};
-      if(kind==="note")new PdfCommentModal(this.app,selected[0].text,create).open();else create();
-    }));}
-    if(hit){const mark=hit;menu.addSeparator();if(mark.kind==="note")menu.addItem(item=>item.setTitle("コメントを表示・編集").setIcon("message-square").onClick(()=>new PdfCommentModal(this.app,mark.text,note=>{mark.note=note;this.controller.annotationsChanged([mark.pageNumber]);this.queue.markDirty();},mark.note).open()));
+    if(selected.length){for(const [kind,label,icon]of textMarks)menu.addItem(item=>item.setTitle(label).setIcon(icon).onClick(()=>this.addTextMark(kind,selected)));}
+    if(hit){const mark=hit;menu.addSeparator();
       menu.addItem(item=>item.setTitle("この注釈を削除").setIcon("trash-2").onClick(()=>{this.controller.annotation.pdfTextAnnotations=this.controller.annotation.pdfTextAnnotations.filter(a=>a.id!==mark.id);this.controller.annotationsChanged([mark.pageNumber]);this.queue.markDirty();}));}
     menu.showAtMouseEvent(event);
   };
-}
-class PdfCommentModal extends Modal {
-  constructor(app:App,private selected:string,private submit:(value:string)=>void,private initial=""){super(app);}
-  onOpen():void{
-    this.contentEl.empty();this.contentEl.createEl("h2",{text:"PDFの注釈"});this.contentEl.createDiv({text:this.selected});
-    const input=this.contentEl.createEl("textarea",{attr:{"aria-label":"コメント"}});input.value=this.initial;
-    const actions=this.contentEl.createDiv({cls:"mobile-ink-pdf-note-actions"}),cancel=actions.createEl("button",{text:"キャンセル"}),save=actions.createEl("button",{text:"保存",cls:"mod-cta"});
-    const submit=()=>{if(!input.value.trim()){input.focus();return;}this.submit(input.value.trim());this.close();};cancel.onclick=()=>this.close();save.onclick=submit;input.onkeydown=event=>{if((event.ctrlKey||event.metaKey)&&event.key==="Enter"){event.preventDefault();submit();}};setTimeout(()=>input.focus(),0);
-  }
 }

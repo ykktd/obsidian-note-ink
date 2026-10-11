@@ -3,6 +3,7 @@ import { StrokeStore } from "./ink/StrokeStore";
 import { AnnotationView } from "./views/AnnotationView";
 import { VIEW_TYPE_MOBILE_INK } from "./constants";
 import { NativePdfAnnotationSession } from "./pdf/NativePdfAnnotationSession";
+import { migrateLegacyPluginData } from "./pluginMigration";
 
 type MobileInkAnnotationSettings = {
   openPdfWithAnnotationByDefault: boolean;
@@ -22,6 +23,11 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   private unloading=false;
 
   async onload(): Promise<void> {
+    try { await migrateLegacyPluginData(this.app, this); }
+    catch (error) {
+      new Notice(`設定・書き込みの引き継ぎに失敗しました。以前のデータは残っています。${error instanceof Error ? error.message : ""}`, 10000);
+      throw error;
+    }
     await this.loadSettings();
     this.store = new StrokeStore(this.app, this);
 

@@ -54,7 +54,7 @@ try{for(const browserName of ['webkit','chromium']){
  const result=await page.evaluate(()=>window.harness.verifyExport('講義/第1回-書き込み.pdf'));
  assert.equal(result.visuals.length,4);
  for(const visual of result.visuals){assert.ok(visual.red>20,JSON.stringify(visual));assert.match(visual.text,/Original text remains selectable/);}
- assert.ok(result.visuals[0].notes.includes('ここは試験に出る'));
+ assert.equal(result.visuals[0].notes.includes('ここは試験に出る'),false);
  await page.evaluate(()=>window.harness.view.containerEl.remove());
  await page.screenshot({path:`work/browser/${browserName}-export-pages.png`,fullPage:true});
  await page.evaluate(()=>window.harness.view.onClose());

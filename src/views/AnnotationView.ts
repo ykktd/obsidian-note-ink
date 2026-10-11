@@ -1,4 +1,4 @@
-import { App, FileView, loadPdfJs, MarkdownRenderer, Menu, Modal, normalizePath, Notice, setIcon, Setting, TFile, WorkspaceLeaf, ViewStateResult } from "obsidian";
+import { App, FileView, loadPdfJs, MarkdownRenderer, Menu, normalizePath, Notice, setIcon, Setting, TFile, WorkspaceLeaf, ViewStateResult } from "obsidian";
 import type MobileInkAnnotationPlugin from "../main";
 import { STANDALONE_INK_EXTENSION, VIEW_TYPE_MOBILE_INK } from "../constants";
 import { InkEngine } from "../ink/InkEngine";
@@ -6825,14 +6825,7 @@ svg { overflow: visible !important; }
       this.setPdfTextAnnotationColor(kind, colorOverride);
     }
 
-    if (kind === "note") {
-      const frozenSelection = this.clonePdfTextSelection(selection);
-      new PdfTextNoteModal(this.app, frozenSelection.visualOnly ? "PDFの範囲" : frozenSelection.text, (note) => {
-        this.commitPdfTextAnnotation("note", frozenSelection, note, color);
-      }, "").open();
-      return;
-    }
-
+    if (kind === "note") return;
     this.commitPdfTextAnnotation(kind, selection, undefined, color);
   }
 
@@ -6984,11 +6977,6 @@ svg { overflow: visible !important; }
       this.handlePdfTextAnnotationButton("strikethrough", event);
     }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.strikethrough, chevron: true, showText: false });
     strikethroughButton.dataset.pdfAnnotationKind = "strikethrough";
-    const noteButton = this.createPdfMenuButton(actions, "message-square-plus", "注釈", () => {
-      this.addPdfTextAnnotation("note");
-    }, { disabled: () => !this.pdfTextSelection?.rects.length, swatch: this.pdfTextAnnotationColors.note, showText: false });
-    noteButton.dataset.pdfAnnotationKind = "note";
-
     const colorPanel = menu.createDiv({ cls: "mobile-ink-pdf-color-panel" });
     this.createPdfColorRow(colorPanel, "highlight", (color) => this.addPdfTextAnnotation("highlight", color));
     this.createPdfColorRow(colorPanel, "underline", (color) => this.addPdfTextAnnotation("underline", color));
@@ -7004,9 +6992,6 @@ svg { overflow: visible !important; }
     this.createPdfMenuButton(actions, "copy", "コピー", () => {
       void this.copyActivePdfAnnotationText();
     }, { disabled: () => !this.getActivePdfTextAnnotation()?.text, showText: true });
-    this.createPdfMenuButton(actions, "message-square-plus", "コメント", () => {
-      this.editActivePdfAnnotationNote();
-    }, { disabled: () => !this.activePdfTextAnnotationId, swatch: this.pdfTextAnnotationColors.note, showText: true });
     this.createPdfMenuButton(actions, "trash-2", "削除", () => {
       this.deleteActivePdfTextAnnotation();
     }, { disabled: () => !this.activePdfTextAnnotationId, danger: true, showText: true });
@@ -7834,6 +7819,7 @@ svg { overflow: visible !important; }
     entry.annotationLayer.style.height = `${Math.max(1, Math.ceil(entry.viewport.height))}px`;
 
     for (const annotation of this.pdfTextAnnotations) {
+      if (annotation.kind === "note") continue;
       if (annotation.pageNumber !== entry.pageNumber) continue;
 
       for (let index = 0; index < annotation.rects.length; index++) {
@@ -7861,18 +7847,6 @@ svg { overflow: visible !important; }
 
         this.bindPdfAnnotationMenuTarget(el, annotation, entry, displayRect);
 
-        if (annotation.kind === "note" && annotation.note && index === 0) {
-          const marker = entry.annotationLayer.createDiv({
-            cls: "mobile-ink-pdf-text-note-marker",
-            attr: {
-              "aria-hidden": "true"
-            }
-          });
-          marker.dataset.annotationId = annotation.id;
-          marker.style.left = `${Math.max(0, displayRect.x + displayRect.width - 8)}px`;
-          marker.style.top = `${Math.max(0, displayRect.y - 8)}px`;
-          this.bindPdfAnnotationMenuTarget(marker, annotation, entry, displayRect);
-        }
       }
     }
   }
@@ -8208,6 +8182,7 @@ svg { overflow: visible !important; }
     layer.style.height = `${Math.max(1, Math.ceil(this.pageLogicalHeight))}px`;
 
     for (const annotation of this.pdfTextAnnotations) {
+      if (annotation.kind === "note") continue;
       if (annotation.pageNumber !== 1) continue;
 
       for (let index = 0; index < annotation.rects.length; index++) {
@@ -8235,16 +8210,6 @@ svg { overflow: visible !important; }
 
         this.bindMarkdownAnnotationMenuTarget(el, annotation, displayRect);
 
-        if (annotation.kind === "note" && annotation.note && index === 0) {
-          const marker = layer.createDiv({
-            cls: "mobile-ink-pdf-text-note-marker mobile-ink-markdown-text-note-marker",
-            attr: { "aria-hidden": "true" }
-          });
-          marker.dataset.annotationId = annotation.id;
-          marker.style.left = `${Math.max(0, displayRect.x + displayRect.width - 8)}px`;
-          marker.style.top = `${Math.max(0, displayRect.y - 8)}px`;
-          this.bindMarkdownAnnotationMenuTarget(marker, annotation, displayRect);
-        }
       }
     }
   }
@@ -8310,7 +8275,7 @@ svg { overflow: visible !important; }
 
   private async copyActivePdfAnnotationText(): Promise<void> {
     const annotation = this.getActivePdfTextAnnotation();
-    const text = annotation?.note || annotation?.text || "";
+    const text = annotation?.text || "";
     if (!text) return;
 
     try {
@@ -8319,24 +8284,6 @@ svg { overflow: visible !important; }
     } catch {
       new Notice("コピーできませんでした。端末のコピーメニューを使ってください。");
     }
-  }
-
-  private editActivePdfAnnotationNote(): void {
-    const annotation = this.getActivePdfTextAnnotation();
-    if (!annotation) return;
-
-    new PdfTextNoteModal(this.app, annotation.text, (note) => {
-      this.pdfTextAnnotations = this.pdfTextAnnotations.map((item) => item.id === annotation.id
-        ? { ...item, note }
-        : item);
-      this.renderPdfTextAnnotations();
-      const displayRect = this.getPdfAnnotationFirstDisplayRect(annotation);
-      this.showPdfAnnotationMenu(annotation.id, {
-        x: displayRect?.x ?? 12,
-        y: (this.isPdfPath(this.sourcePath) ? this.getPdfPageOffsetY(annotation.pageNumber) : 0) + Math.max(0, (displayRect?.y ?? 12) - 42)
-      });
-      this.saveQueue?.markDirty();
-    }, annotation.note ?? "").open();
   }
 
   private updateActivePdfAnnotationColor(color: string): void {
@@ -8642,7 +8589,7 @@ svg { overflow: visible !important; }
         cls: "mobile-ink-pdf-annotation-kind",
         text: this.getPdfAnnotationLabel(annotation)
       });
-      const previewText = annotation.note || annotation.text;
+      const previewText = annotation.text;
       if (previewText) {
         summary.createDiv({
           cls: "mobile-ink-pdf-annotation-preview",
@@ -8677,83 +8624,6 @@ svg { overflow: visible !important; }
     }
   }
 }
-
-class PdfTextNoteModal extends Modal {
-  constructor(
-    app: App,
-    private readonly selectedText: string,
-    private readonly onSubmit: (note: string) => void,
-    private readonly initialNote = ""
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("mobile-ink-pdf-note-modal");
-    contentEl.createEl("h2", { text: "PDFの注釈" });
-    contentEl.createDiv({
-      cls: "mobile-ink-pdf-note-selected-text",
-      text: this.selectedText
-    });
-
-    const input = contentEl.createEl("textarea", {
-      cls: "mobile-ink-pdf-note-input",
-      attr: {
-        placeholder: "注釈を入力"
-      }
-    });
-    input.value = this.initialNote;
-    contentEl.createDiv({
-      cls: "mobile-ink-pdf-note-hint",
-      text: "Ctrl / Cmd + Enterで保存"
-    });
-
-    const actions = contentEl.createDiv({ cls: "mobile-ink-pdf-note-actions" });
-    const cancelButton = actions.createEl("button", {
-      text: "キャンセル",
-      attr: { type: "button" }
-    });
-    const submitButton = actions.createEl("button", {
-      text: "保存",
-      cls: "mod-cta",
-      attr: { type: "button" }
-    });
-
-    const submit = () => {
-      const note = input.value.trim();
-      if (!note) {
-        input.focus();
-        return;
-      }
-
-      this.onSubmit(note);
-      this.close();
-    };
-
-    cancelButton.addEventListener("click", () => this.close());
-    submitButton.addEventListener("click", submit);
-    input.addEventListener("keydown", (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        submit();
-      }
-    });
-
-    requestAnimationFrame(() => input.focus());
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
-}
-
-
-
-
-
-
 
 function multiplyPdfMatrix(a: PdfMatrix, b: PdfMatrix): PdfMatrix {
   return [

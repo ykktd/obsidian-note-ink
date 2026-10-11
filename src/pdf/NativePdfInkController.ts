@@ -109,7 +109,7 @@ export class NativePdfInkController {
       if(!page||page.div!==div)continue;
       if(!page.pdfPage)continue;const rect=page.div.getBoundingClientRect();
       if(rect.bottom<box.top-100||rect.top>box.bottom+100)continue;
-      if(!this.annotation.strokes.some(s=>s.pageNumber===page.id)&&!this.annotation.pdfTextAnnotations.some(a=>a.pageNumber===page.id))continue;
+      if(!this.annotation.strokes.some(s=>s.pageNumber===page.id)&&!this.annotation.pdfTextAnnotations.some(a=>a.kind!=="note"&&a.pageNumber===page.id))continue;
       wanted.add(page.id);this.updateLayer(page);
     }
     for(const [n,layer]of this.layers)if(!wanted.has(n)&&this.input?.page.id!==n){this.removeLayer(layer);this.layers.delete(n);}
@@ -134,7 +134,7 @@ export class NativePdfInkController {
       const ctx=setupCanvas(layer.canvas,viewport.width,viewport.height,{maxDpr:dpr,maxPixels:1_000_000});
       layer.canvas.style.width=layer.canvas.style.height="100%";
       layer.marks.setAttribute("viewBox",`0 0 ${viewport.width} ${viewport.height}`);layer.marks.replaceChildren();
-      for(const mark of this.annotation.pdfTextAnnotations.filter(a=>a.pageNumber===page.id))for(const r of pdfMarkShapes(mark,page.pdfPage!,viewport)){
+      for(const mark of this.annotation.pdfTextAnnotations.filter(a=>a.kind!=="note"&&a.pageNumber===page.id))for(const r of pdfMarkShapes(mark,page.pdfPage!,viewport)){
         const rect=this.doc.createElementNS(layer.marks.namespaceURI,"rect");
         for(const [key,value]of Object.entries(r))rect.setAttribute(key,String(value));
         rect.setAttribute("fill",mark.color);rect.setAttribute("opacity",mark.kind==="underline"||mark.kind==="strikethrough"?".86":".42");layer.marks.append(rect);

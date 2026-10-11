@@ -1,5 +1,5 @@
 import {
-  PDFDocument, PDFHexString, PDFName, PDFNumber, PDFString,
+  PDFDocument,
   concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState,
 } from 'pdf-lib';
 import type { InkStroke, PdfTextAnnotation } from '../ink/types';
@@ -49,7 +49,7 @@ export function drawPageOverlay(
 ): void {
   // Match the viewer: text marks are behind the handwriting canvas.
   for (const annotation of annotations) {
-    if (annotation.pageNumber !== page.pageNumber) continue;
+    if (annotation.kind === "note" || annotation.pageNumber !== page.pageNumber) continue;
     const sx = page.width / (annotation.pageWidth || page.width);
     const sy = page.height / (annotation.pageHeight || page.height);
     ctx.save();
@@ -61,11 +61,6 @@ export function drawPageOverlay(
       else if (annotation.kind === 'underline') ctx.fillRect(x,y+Math.max(1,h-2),w,2);
       else if (annotation.kind === 'strikethrough') ctx.fillRect(x,y+Math.max(1,Math.round(h/2)-1),w,2);
       else ctx.fillRect(x,y,w,h);
-    }
-    if (annotation.kind === 'note' && annotation.note && annotation.rects[0]) {
-      const rect = annotation.rects[0];
-      ctx.globalAlpha = 1;
-      ctx.fillRect(Math.max(0,(rect.x+rect.width)*sx-8),Math.max(0,rect.y*sy-8),12,12);
     }
     ctx.restore();
   }
@@ -103,7 +98,7 @@ export async function exportAnnotatedPdf(
     const content=pageContent?.get(layout.pageNumber);
     const pageStrokes=pageContent?(content?.strokes??[]):strokes;
     const hasInk=pageStrokes.some(s=>s.points.some(p=>p.y>=layout.offsetY-s.width && p.y<=layout.offsetY+layout.height+s.width));
-    const marks=pageContent?(content?.annotations??[]):annotations.filter(a=>a.pageNumber===layout.pageNumber);
+    const marks=pageContent?(content?.annotations?.filter(a=>a.kind!=='note')??[]):annotations.filter(a=>a.kind!=="note"&&a.pageNumber===layout.pageNumber);
     if (hasInk || marks.length) {
       const canvas=document.createElement('canvas');
       // One bounded canvas at a time, irrespective of the number of slides.
@@ -118,18 +113,6 @@ export async function exportAnnotatedPdf(
         const image=await doc.embedPng(await pngBytes(canvas));
         const key=page.node.newXObject('LectureInk',image.ref);
         page.pushOperators(pushGraphicsState(),concatTransformationMatrix(...overlayMatrix(layout)),drawObject(key),popGraphicsState());
-        // Comment text stays readable in other PDF viewers, including Japanese UTF-16.
-        for (const note of marks.filter(a=>a.kind==='note' && a.note && a.rects[0])) {
-          const rect=note.rects[0], inverse=invertMatrix(layout.transform);
-          const [x,y]=transformPoint(inverse,rect.x*layout.width/(note.pageWidth||layout.width),rect.y*layout.height/(note.pageHeight||layout.height));
-          const ref=doc.context.register(doc.context.obj({
-            Type:PDFName.of('Annot'),Subtype:PDFName.of('Text'),
-            Rect:[x,y,x+16,y+16],Contents:PDFHexString.fromText(note.note!),
-            T:PDFHexString.fromText('Note Ink'),Name:PDFName.of('Comment'),
-            F:PDFNumber.of(4),P:page.ref,NM:PDFString.of(`lecture-ink-${note.id}`),
-          }));
-          page.node.addAnnot(ref);
-        }
       } finally { canvas.width=canvas.height=0; }
     }
     onProgress(index+1,pages.length);

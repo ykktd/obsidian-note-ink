@@ -30,7 +30,7 @@ export class Menu {
 }
 export class Modal {contentEl=create(document.body,'div',{cls:'modal-content'});constructor(public app:any){}open(){(this as any).onOpen?.();}close(){this.contentEl.remove();}}
 export class Setting {}
-export class Plugin {manifest={id:"obsidian-lecture-ink"};constructor(public app:any){}}
+export class Plugin {manifest={id:"obsidian-note-ink"};constructor(public app:any){}}
 export class PluginSettingTab {constructor(public app:any,public plugin:any){}}
 export function normalizePath(path:string){return path.replace(/\\/g,'/');}
 export function setIcon(el:HTMLElement,icon:string){
