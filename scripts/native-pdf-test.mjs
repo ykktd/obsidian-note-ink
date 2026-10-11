@@ -25,28 +25,17 @@ try{for(const [name,type]of [['chromium',chromium],['webkit',webkit]]){
  const nav=[];for(const [n,scale,rotation]of [[2,1,0],[2,4,0],[2,2,90],[20,1,0],[7,1.1,0],[1,1,0]]){await page.evaluate(([n,s,r])=>{const v=window.nativeHarness.viewer;v.pagesRotation=r;v.currentScale=s;v.currentPageNumber=n;v.update();},[n,scale,rotation]);await page.waitForFunction(n=>window.nativeHarness.viewer.getPageView(n-1).renderingState===3,n);await page.waitForTimeout(100);const state=await page.evaluate(()=>window.nativeHarness.snapshot());assert.equal(state.strokes,5001);assert.equal(state.live,0);assert.ok(state.pixels<10_000_000);nav.push(state);}
  const beforePen=await page.evaluate(()=>window.nativeHarness.snapshot());await page.evaluate(()=>window.nativeHarness.pen(1,180,140));await page.waitForTimeout(50);const penAgain=await page.evaluate(()=>window.nativeHarness.snapshot());assert.equal(penAgain.strokes,5002);assert.equal(penAgain.live,1);
  await page.locator('button[aria-label="消しゴム"]').click();await page.getByLabel('ストローク消去',{exact:true}).check();await page.evaluate(()=>window.nativeHarness.pen(1,180,140));const erased=await page.evaluate(()=>window.nativeHarness.snapshot());assert.ok(erased.strokes<5002);await page.locator('button[aria-label="元に戻す"]').click();assert.equal((await page.evaluate(()=>window.nativeHarness.snapshot())).strokes,5002);
- const selection=await page.evaluate(()=>window.nativeHarness.textSelection());assert.ok(selection.text.includes('Native PDF page'));assert.ok(selection.menu.includes('ハイライトを付ける'));assert.equal(selection.menu.includes('コメント'),false);await page.locator('.test-menu button').filter({hasText:'下線を引く'}).click();assert.equal(await page.evaluate(()=>window.nativeHarness.session.controller.annotation.pdfTextAnnotations.length),2);
- // Text mode leaves native selection/handles alone, and toolbar touch applies the adjusted range.
- await page.locator('button[aria-label="文字選択"]').click();
- await page.waitForFunction(()=>window.nativeHarness.viewer.getPageView(0).div.querySelector('.textLayer span'));
- const textMode=await page.evaluate(()=>{
-  const h=window.nativeHarness,n=h.session.controller.annotation.strokes.length;h.pen(1,150,170);
-  const span=h.viewer.getPageView(0).div.querySelector('.textLayer span'),node=span.firstChild,r=document.createRange();r.setStart(node,0);r.setEnd(node,6);document.getSelection().removeAllRanges();document.getSelection().addRange(r);
-  const e=new MouseEvent('contextmenu',{bubbles:true,cancelable:true});span.dispatchEvent(e);
-  return {noInk:h.session.controller.annotation.strokes.length===n,prevented:e.defaultPrevented,customMenu:!!document.querySelector('.test-menu'),text:document.getSelection().toString(),penClass:span.closest('.page').classList.contains('note-ink-pen-contact')};
- });
- assert.deepEqual(textMode,{noInk:true,prevented:false,customMenu:false,text:'Native',penClass:false});
- await page.waitForFunction(()=>!document.querySelector('button[aria-label="ハイライトを付ける"]').disabled);
- await page.getByRole('button',{name:'ハイライトを付ける',exact:true}).tap();
- const textMark=await page.evaluate(()=>window.nativeHarness.session.controller.annotation.pdfTextAnnotations.at(-1));assert.equal(textMark.kind,'highlight');assert.equal(textMark.text,'Native');assert.ok(textMark.rects.length>0);assert.ok(textMark.rects[0].width<100);
- // Extend the endpoint to a full line, then add strikethrough via the keyboard.
- await page.evaluate(()=>{const s=window.nativeHarness.viewer.getPageView(0).div.querySelector('.textLayer span'),r=document.createRange();r.selectNodeContents(s);document.getSelection().addRange(r);});
- await page.waitForFunction(()=>!document.querySelector('button[aria-label="取り消し線を引く"]').disabled);
- await page.getByRole('button',{name:'取り消し線を引く',exact:true}).focus();await page.keyboard.press('Enter');
- assert.equal(await page.evaluate(()=>window.nativeHarness.session.controller.annotation.pdfTextAnnotations.at(-1).kind),'strikethrough');
- await page.evaluate(()=>{const s=window.nativeHarness.viewer.getPageView(0).div.querySelector('.textLayer span'),r=document.createRange();r.selectNodeContents(s);document.getSelection().addRange(r);});
- await page.getByRole('button',{name:'ペン',exact:true}).click();assert.equal(await page.evaluate(()=>document.getSelection().toString()),'');assert.equal(await page.getByRole('button',{name:'文字選択',exact:true}).getAttribute('aria-pressed'),'false');
- const reload=await page.evaluate(()=>window.nativeHarness.saveReload());assert.equal(reload.version,2);assert.equal(reload.reloaded,5002);assert.equal(reload.hasGlobalHeight,false);assert.deepEqual(reload.backups,[true]);
+ // Text annotation creation is absent; native PDF selection does not create marks.
+ for(const label of ['文字選択','文字を選択','ハイライトを付ける','下線を引く','取り消し線を引く'])assert.equal(await page.getByRole('button',{name:label,exact:true}).count(),0);
+ const oldMarks=await page.evaluate(()=>JSON.stringify(window.nativeHarness.session.controller.annotation.pdfTextAnnotations));
+ const selection=await page.evaluate(()=>window.nativeHarness.textSelection());assert.ok(selection.text.includes('Native PDF page'));assert.equal(selection.menu,undefined);
+ assert.equal(await page.evaluate(()=>JSON.stringify(window.nativeHarness.session.controller.annotation.pdfTextAnnotations)),oldMarks);
+ await page.evaluate(()=>document.getSelection().removeAllRanges());
+ await page.getByRole('button',{name:'蛍光ペン',exact:true}).click();assert.equal(await page.getByRole('button',{name:'蛍光ペン',exact:true}).getAttribute('aria-pressed'),'true');
+ const marker=await page.evaluate(()=>{const h=window.nativeHarness;h.pen(1,160,180);return h.session.controller.getStrokes().at(-1);});assert.equal(marker.tool,'highlighter');
+ await page.getByRole('button',{name:'元に戻す',exact:true}).click();
+ await page.getByRole('button',{name:'ペン',exact:true}).click();assert.equal(await page.getByRole('button',{name:'ペン',exact:true}).getAttribute('aria-pressed'),'true');
+ const reload=await page.evaluate(()=>window.nativeHarness.saveReload());assert.equal(await page.evaluate(()=>JSON.stringify(window.nativeHarness.session.controller.annotation.pdfTextAnnotations)),oldMarks);assert.equal(reload.version,2);assert.equal(reload.reloaded,5002);assert.equal(reload.hasGlobalHeight,false);assert.deepEqual(reload.backups,[true]);
  const failure=await page.evaluate(()=>window.nativeHarness.saveFailure());assert.deepEqual(failure,{rejected:true,retained:true,errorVisible:true,cleared:true});
  let nativeTouch;if(name==='chromium'){const cdp=await page.context().newCDPSession(page);const p=await page.evaluate(()=>window.nativeHarness.point(1,140,100));const before=await page.evaluate(()=>window.nativeHarness.viewer.container.scrollTop);await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:p.x,y:p.y,id:1,radiusX:16,radiusY:16}]});for(let i=1;i<=5;i++){await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:p.x,y:p.y-i*24,id:1,radiusX:16,radiusY:16}]});await page.waitForTimeout(20);}await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await page.waitForTimeout(100);nativeTouch={before,after:await page.evaluate(()=>window.nativeHarness.viewer.container.scrollTop)};assert.ok(nativeTouch.after-nativeTouch.before>70);await page.evaluate(()=>{const v=window.nativeHarness.viewer;v.currentPageNumber=1;v.container.scrollTop=0;v.update();});await page.waitForTimeout(100);}
  const exported=await page.evaluate(()=>window.nativeHarness.exportCheck());await writeFile(`${output}/${name}-export.pdf`,new Uint8Array(exported.bytes));for(const c of exported.checks){assert.ok(c.red>100,JSON.stringify(c));assert.ok(c.text.includes('Original text remains selectable'));}assert.equal(exported.checks[0].notes.includes('旧注釈のコメント'),false);

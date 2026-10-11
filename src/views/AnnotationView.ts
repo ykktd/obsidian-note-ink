@@ -660,7 +660,6 @@ export class AnnotationView extends FileView {
       this.markdownTextAnnotationLayerEl = markdownTextAnnotationLayer;
       this.createSelectionMenu(selectionMenu);
       this.createCaptureMenu(captureMenu);
-      this.createPdfTextMenu(pdfTextMenu);
       this.createPdfAnnotationMenu(pdfAnnotationMenu);
       this.backgroundEl = background;
       this.committedCanvas = committed;
@@ -1063,9 +1062,6 @@ export class AnnotationView extends FileView {
     }
     if (false) {
       this.toolbarButtons.capture = this.createIconButton(toolGroup, "scan-search", "範囲を画像にする", () => ((...args: any[]) => (null as any))(!this.captureMode));
-    }
-    if (this.plugin.hasFeature("pdfTextAnnotation")) {
-      this.toolbarButtons.select = this.createIconButton(toolGroup, "text-select", "文字を選択", () => this.setSelectMode(!this.selectMode));
     }
     this.toolbarButtons.width = this.createIconButton(toolGroup, "sliders-horizontal", "線の太さ", () => this.setWidthPanelOpen(!this.widthPanelOpen));
 
