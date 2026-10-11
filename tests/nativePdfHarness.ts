@@ -12,7 +12,7 @@ Object.assign(HTMLElement.prototype,{setCssStyles(this:HTMLElement,styles:any){O
 const core=await import('/native/pdf.min.mjs' as string),ui=await import('/native/pdf.viewer.min.mjs' as string);core.GlobalWorkerOptions.workerSrc='/native/pdf.worker.min.mjs';
 const files=new Map<string,Uint8Array>(),disk=new Map<string,string>();let failing=false;
 const source='講義/標準ビューア.pdf';const file=new TFile(source);
-const app:any={vault:{getAbstractFileByPath:(p:string)=>files.has(p)?p===source?file:new TFile(p):null,readBinary:async(f:TFile)=>files.get(f.path)!.slice().buffer,createBinary:async(p:string,b:ArrayBuffer)=>{if(files.has(p))throw new Error('exists');files.set(p,new Uint8Array(b));},adapter:{exists:async(p:string)=>disk.has(p)||files.has(p),mkdir:async()=>{},read:async(p:string)=>disk.get(p)!,write:async(p:string,raw:string)=>{if(failing&&p.endsWith('.ink.json'))throw new Error('disk full');disk.set(p,raw);}}},workspace:{activeLeaf:null,revealLeaf:()=>{},getActiveFile:()=>file,getActiveViewOfType:()=>null}};
+const app:any={vault:{getAbstractFileByPath:(p:string)=>files.has(p)?p===source?file:new TFile(p):null,readBinary:async(f:TFile)=>files.get(f.path)!.slice().buffer,createBinary:async(p:string,b:ArrayBuffer)=>{if(files.has(p))throw new Error('exists');files.set(p,new Uint8Array(b));},adapter:{exists:async(p:string)=>disk.has(p)||files.has(p),mkdir:async()=>{},read:async(p:string)=>disk.get(p)!,write:async(p:string,raw:string)=>{if(failing&&p.endsWith('.ink.json'))throw new Error('disk full');disk.set(p,raw);}}},workspace:{activeLeaf:null,revealLeaf:()=>{},getActiveFile:()=>file,getActiveViewOfType:()=>null,getLeavesOfType:(type:string)=>type==='pdf'&&leaf?[leaf]:[],detachLeavesOfType:()=>{}}};
 const plugin:any=new NoteInk(app,{} as any);plugin.store=new StrokeStore(app,plugin);plugin.settings={openPdfWithAnnotationByDefault:false};
 let leaf:any,view:any,session:NativePdfAnnotationSession,pdf:any,viewer:any,bus:any,legacyRaw:string;
 async function fixture(count=50){
@@ -36,6 +36,7 @@ async function open(){
  }
  legacyRaw=JSON.stringify({version:1,sourcePath:source,sourceMtime:1,pageWidth:width,pageHeight:50*580+49*12,strokes,pdfTextAnnotations:[{id:'old-note',pageNumber:1,kind:'note',color:'#8b5cf6',text:'Original',note:'旧注釈のコメント',pageWidth:width,pageHeight:height,rects:[{x:100,y:300,width:100,height:20}],createdAt:1}],updatedAt:1});
  disk.set(plugin.store.getAnnotationPath(source),legacyRaw);
+ plugin.syncPdfViewActions();
  const start=performance.now();await plugin.openInkForFile(file,leaf);session=plugin.pdfSessions.get(leaf);if(!session)throw new Error('native session did not open');
  return {openMs:performance.now()-start,version:session.controller.annotation.version,strokes:session.controller.annotation.strokes.length,legacyUntouched:disk.get(plugin.store.getAnnotationPath(source))===legacyRaw};
 }
@@ -54,7 +55,7 @@ async function exportCheck(){const bytes=await exportNativePdf(pdf,session.contr
  await copy.destroy();return {bytes:Array.from(bytes),checks};}
 async function switchFile(){pen(1,170,150);const count=session.controller.annotation.strokes.length;await view.onUnloadFile(file);view.file=new TFile('講義/別資料.pdf');return {closed:session.closed,saved:JSON.parse(disk.get(plugin.store.getAnnotationPath(source))!).strokes.length,count,live:view.contentEl.querySelectorAll('.note-ink-native-live').length,tools:view.contentEl.querySelectorAll('.note-ink-native-tools').length};}
 function textSelection(){const span=viewer.getPageView(0).div.querySelector('.textLayer span')!,range=document.createRange();range.selectNodeContents(span);document.getSelection()!.removeAllRanges();document.getSelection()!.addRange(range);const box=span.getBoundingClientRect();viewer.container.dispatchEvent(new MouseEvent('contextmenu',{view:window,bubbles:true,cancelable:true,clientX:box.x+10,clientY:box.y+10}));return {text:document.getSelection()!.toString(),menu:document.querySelector('.test-menu')?.textContent};}
-w.nativeHarness={open,pen,point,finger,snapshot,saveReload,saveFailure,exportCheck,switchFile,textSelection,get session(){return session;},get viewer(){return viewer;},get view(){return view;},get pdf(){return pdf;},get plugin(){return plugin;},get disk(){return disk;}};
+w.nativeHarness={open,pen,point,finger,snapshot,saveReload,saveFailure,exportCheck,switchFile,textSelection,get session(){return plugin.pdfSessions.get(leaf)??session;},refreshSession(){session=plugin.pdfSessions.get(leaf)??session;},get viewer(){return viewer;},get view(){return view;},get pdf(){return pdf;},get plugin(){return plugin;},get disk(){return disk;}};
 w.nativeReady=true;
 
 w.nativeHarness.cutoutExport=async()=>{

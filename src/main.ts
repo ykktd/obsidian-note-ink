@@ -19,6 +19,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
   private defaultPdfOpenPath: string | null = null;
   private readonly sourceViewLeaves = new WeakMap<WorkspaceLeaf,string>();
   private readonly pdfSessions = new Map<WorkspaceLeaf,NativePdfAnnotationSession>();
+  private readonly pdfViewActions=new Map<WorkspaceLeaf,{view:any;button:HTMLElement}>();
   private pdfOpening:Promise<void>=Promise.resolve();
   private unloading=false;
 
@@ -38,12 +39,15 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
       this.cleanPdfSessions();
+      this.syncPdfViewActions();
       this.queueOpenPdfWithAnnotationByDefault(file);
     }));
-    this.registerEvent(this.app.workspace.on("layout-change",()=>this.cleanPdfSessions()));
+    this.registerEvent(this.app.workspace.on("layout-change",()=>{this.cleanPdfSessions();this.syncPdfViewActions();}));
+    this.registerEvent(this.app.workspace.on("active-leaf-change",()=>this.syncPdfViewActions()));
 
     this.addSettingTab(new MobileInkAnnotationSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(()=>{
+      this.syncPdfViewActions();
       for(const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MOBILE_INK)){
         const state=leaf.getViewState().state as {sourcePath?:string;file?:string}|undefined;
         const file=this.app.vault.getAbstractFileByPath(state?.sourcePath??state?.file??"");
@@ -51,13 +55,13 @@ export default class MobileInkAnnotationPlugin extends Plugin {
       }
     });
 
-    this.addRibbonIcon("pencil", "手書き注釈を開く", async () => {
+    this.addRibbonIcon("pencil", "手書きを始める", async () => {
       await this.openInkForActiveFile();
     });
 
     this.addCommand({
       id: "open-mobile-ink-annotation",
-      name: "現在のファイルに手書き注釈を付ける",
+      name: "現在のファイルで手書きを始める",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && (file.extension === "md" || file.extension === "pdf");
@@ -84,6 +88,8 @@ export default class MobileInkAnnotationPlugin extends Plugin {
 
   onunload(): void {
     this.unloading=true;
+    for(const {button}of this.pdfViewActions.values())button.remove();
+    this.pdfViewActions.clear();
     for(const session of this.pdfSessions.values())session.unload();
     this.pdfSessions.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_MOBILE_INK);
@@ -97,7 +103,7 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     }
 
     if (file.extension !== "md" && file.extension !== "pdf") {
-      new Notice("注釈を付けられるのはMarkdownノートとPDFです。");
+      new Notice("手書きできるのはMarkdownノートとPDFです。");
       return;
     }
 
@@ -130,9 +136,41 @@ export default class MobileInkAnnotationPlugin extends Plugin {
     if(leaf.view?.getViewType()!=="pdf"||(leaf.view as any).file?.path!==file.path)await leaf.setViewState({type:"pdf",active:true,state:{file:file.path}});
     this.app.workspace.revealLeaf(leaf);
     try{
-      const session=await NativePdfAnnotationSession.open(this.app,this.store,leaf,file.path);
-      if(this.unloading){await session.close();return;}this.pdfSessions.set(leaf,session);
-    }catch(error){console.error("Note Ink: native PDF annotation unavailable",error);new Notice(error instanceof Error?error.message:"注釈を開けませんでした。通常のPDF表示はそのまま使えます。",10000);}
+      const session=await NativePdfAnnotationSession.open(this.app,this.store,leaf,file.path,()=>{
+        if(this.unloading)return;
+        // A deliberate return to normal viewing must survive delayed auto-open events.
+        if(leaf.view?.getViewType()==="pdf"&&(leaf.view as any).file?.path===file.path)this.sourceViewLeaves.set(leaf,file.path);
+        this.syncPdfViewActions();
+      });
+      if(this.unloading){await session.close();return;}this.pdfSessions.set(leaf,session);this.syncPdfViewActions();
+    }catch(error){console.error("Note Ink: native PDF annotation unavailable",error);new Notice(error instanceof Error?error.message:"手書きを始められませんでした。通常のPDF表示はそのまま使えます。",10000);this.syncPdfViewActions();}
+  }
+  private syncPdfViewActions():void{
+    if(this.unloading)return;
+    const leaves=this.app.workspace.getLeavesOfType("pdf");
+    for(const [leaf,action]of this.pdfViewActions){
+      if(!leaves.includes(leaf)||leaf.view!==action.view||!action.button.isConnected){action.button.remove();this.pdfViewActions.delete(leaf);}
+    }
+    for(const leaf of leaves){
+      const view=leaf.view as any;
+      if(!(view.file instanceof TFile)||view.file.extension!=="pdf"||typeof view.addAction!=="function")continue;
+      let action=this.pdfViewActions.get(leaf);
+      if(!action){
+        const button=view.addAction("pencil","手書きを始める",()=>{
+          if(button.getAttribute("aria-disabled")==="true")return;
+          const file=view.file;
+          if(leaf.view!==view||!(file instanceof TFile)||file.extension!=="pdf")return;
+          // Prevent repeated taps while the PDF and saved ink are being loaded.
+          button.setAttribute("aria-disabled","true");button.style.pointerEvents="none";
+          void this.openInkForFile(file,leaf).catch(error=>{console.error("Note Ink: PDF reopen failed",error);new Notice("手書きを始められませんでした。もう一度お試しください。");})
+            .finally(()=>{button.removeAttribute("aria-disabled");button.style.pointerEvents="";this.syncPdfViewActions();});
+        });
+        action={view,button};this.pdfViewActions.set(leaf,action);
+      }
+      const session=this.pdfSessions.get(leaf);
+      action.button.hidden=!!session&&!session.closed&&session.binding.view===view;
+      action.button.style.display=action.button.hidden?"none":"";
+    }
   }
   private cleanPdfSessions():void{
     for(const [leaf,session]of this.pdfSessions){
@@ -237,8 +275,8 @@ class MobileInkAnnotationSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("PDFを注釈画面で開く")
-      .setDesc("PDFを開くと、保存済みの手書きやハイライトを表示する注釈画面に切り替えます。オフの場合はObsidian標準のPDFビューアーで開きます。")
+      .setName("PDFを手書き画面で開く")
+      .setDesc("PDFを開くと、保存済みの手書きやハイライトを表示する手書き画面に切り替えます。オフの場合はObsidian標準のPDFビューアーで開きます。")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.openPdfWithAnnotationByDefault)
@@ -247,7 +285,7 @@ class MobileInkAnnotationSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             if (value) {
               this.plugin.openActivePdfWithAnnotationIfEnabled();
-              new Notice("PDFを注釈画面で開くように設定しました。");
+              new Notice("PDFを手書き画面で開くように設定しました。");
             } else {
               new Notice("PDFはObsidian標準のビューアーで開きます。");
             }

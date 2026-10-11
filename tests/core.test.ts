@@ -151,7 +151,7 @@ test('migration backup precedes the first v2 write; failed writes and stale sess
   failing=false;const saved=await store.savePdf(loaded.annotation,loaded.raw);assert.equal(JSON.parse(saved).version,2);await assert.rejects(store.savePdf(loaded.annotation,raw),/別の画面/);assert.equal(disk.get(path),saved);
   disk.set(path,'{"version":3}');await assert.rejects(store.loadPdf(file.path,pdf));assert.equal(disk.get(path),'{"version":3}');
   const damaged=legacy([],480);damaged.pdfTextAnnotations=[{id:'bad-mark',kind:'highlight',pageNumber:1,color:'#112233',text:'text',createdAt:1,rects:[{x:1,y:1,width:-1,height:20}]}];
-  const damagedRaw=JSON.stringify(damaged);disk.set(path,damagedRaw);await assert.rejects(store.loadPdf(file.path,pdf),/旧文字注釈/);assert.equal(disk.get(path),damagedRaw);
+  const damagedRaw=JSON.stringify(damaged);disk.set(path,damagedRaw);await assert.rejects(store.loadPdf(file.path,pdf),/以前の文字への書き込み/);assert.equal(disk.get(path),damagedRaw);
 });
 
 import {eraseStrokes} from '../src/ink/eraser';

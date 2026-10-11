@@ -252,7 +252,7 @@ export class AnnotationView extends FileView {
 
   getDisplayText(): string {
     const name = this.sourcePath ? this.sourcePath.split("/").pop() : "Note Ink";
-    return this.standalone ? `手書き： ${name}` : `注釈： ${name}`;
+    return `手書き： ${name}`;
   }
 
   getIcon(): string {
@@ -266,7 +266,7 @@ export class AnnotationView extends FileView {
     menu.addSeparator();
     menu.addItem((item) => {
       item
-        .setTitle("注釈を保存")
+        .setTitle("書き込みを保存")
         .setIcon("save")
         .onClick(() => {
           void this.saveCurrentAnnotation().catch(error => console.error("Note Ink: save failed", error));
@@ -408,7 +408,7 @@ export class AnnotationView extends FileView {
     menu.addSeparator();
     menu.addItem((item) => {
       item
-        .setTitle("注釈画面を閉じる")
+        .setTitle("手書きを終了")
         .setIcon("x")
         .onClick(() => {
           void this.exitAnnotationView().catch(error => console.error("Note Ink: close failed", error));
@@ -604,7 +604,7 @@ export class AnnotationView extends FileView {
       this.contentEl.empty();
 
       if (!this.sourcePath) {
-        this.contentEl.createDiv({ cls: "mobile-ink-status", text: "注釈を付けるファイルが指定されていません。" });
+        this.contentEl.createDiv({ cls: "mobile-ink-status", text: "書き込むファイルが指定されていません。" });
         return;
       }
 
@@ -636,7 +636,7 @@ export class AnnotationView extends FileView {
       const markdownTextAnnotationLayer = page.createDiv({ cls: "mobile-ink-markdown-text-annotation-layer" });
       const committed = page.createEl("canvas", { cls: "mobile-ink-committed-canvas" });
       const live = page.createEl("canvas", { cls: "mobile-ink-live-canvas", attr: { "aria-label": "手書きエリア" } });
-      const selectionLayer = page.createDiv({ cls: "mobile-ink-selection-layer", attr: { "aria-label": "注釈の選択エリア" } });
+      const selectionLayer = page.createDiv({ cls: "mobile-ink-selection-layer", attr: { "aria-label": "書き込みの選択エリア" } });
       const selectionMarquee = selectionLayer.createDiv({ cls: "mobile-ink-selection-marquee" });
       const selectionBox = selectionLayer.createDiv({ cls: "mobile-ink-selection-box" });
       const captureBox = selectionLayer.createDiv({ cls: "mobile-ink-capture-box" });
@@ -1002,13 +1002,13 @@ export class AnnotationView extends FileView {
 
   private async saveCurrentAnnotation(): Promise<void> {
     await this.flushCurrentWork();
-    new Notice("注釈を保存しました。");
+    new Notice("書き込みを保存しました。");
   }
 
   private showSaveError():void {
     if(this.saveErrorEl?.isConnected)return;
     const box=this.contentEl.createDiv({cls:'note-ink-save-error',attr:{role:'alert'}});
-    box.createSpan({text:'注釈を保存できませんでした。空き容量と保存先を確認してください。'});
+    box.createSpan({text:'書き込みを保存できませんでした。空き容量と保存先を確認してください。'});
     const retry=box.createEl('button',{text:'再試行',attr:{type:'button'}});
     retry.addEventListener('click',async()=>{
       retry.disabled=true;
@@ -1028,7 +1028,7 @@ export class AnnotationView extends FileView {
       await this.plugin.openSourceWithoutAnnotation(file,this.leaf);
     } catch(error) {
       this.syncInkInputEnabled();
-      new Notice('元のファイルに戻れませんでした。注釈画面を保持しています。');
+      new Notice('元のファイルに戻れませんでした。手書き画面を保持しています。');
       throw error;
     } finally {this.returningToSource=false;}
   }
@@ -1039,7 +1039,7 @@ export class AnnotationView extends FileView {
   private createToolbar(root: HTMLElement): void {
     const toolbar = root.createDiv({
       cls: "mobile-ink-toolbar",
-      attr: { "aria-label": "注釈ツールバー" }
+      attr: { "aria-label": "手書きツールバー" }
     });
     this.toolbarEl = toolbar;
 
@@ -1221,7 +1221,7 @@ export class AnnotationView extends FileView {
       this.setEraserPanelOpen(false);
     });
     if (this.plugin.hasFeature("clearAllAnnotations")) {
-      this.toolbarButtons.clearAll = this.createEraserOption(panel, "trash-2", "注釈をすべて削除", async () => {
+      this.toolbarButtons.clearAll = this.createEraserOption(panel, "trash-2", "書き込みをすべて削除", async () => {
         await this.confirmAndClearAll();
       });
       this.toolbarButtons.clearAll.classList.add("mobile-ink-danger-option");
@@ -5012,11 +5012,11 @@ export class AnnotationView extends FileView {
 
   private async confirmAndClearAll(): Promise<void> {
     if (!this.plugin.hasFeature("clearAllAnnotations")) {
-      new Notice("この版では注釈の一括削除を利用できません。");
+      new Notice("この版では書き込みの一括削除を利用できません。");
       return;
     }
 
-    const confirmed = window.confirm("このファイルの手書きと注釈をすべて削除しますか？この操作は元に戻せません。");
+    const confirmed = window.confirm("このファイルの書き込みをすべて削除しますか？この操作は元に戻せません。");
     if (!confirmed) return;
 
     this.setEraserPanelOpen(false);
@@ -5026,7 +5026,7 @@ export class AnnotationView extends FileView {
     this.renderPdfTextAnnotations();
     this.engine?.clear();
     await this.saveQueue?.flush();
-    new Notice("手書きと注釈をすべて削除しました。");
+    new Notice("書き込みをすべて削除しました。");
   }
 
   private getActiveColor(state = this.engine?.getToolState()): string {
@@ -5782,7 +5782,7 @@ ${pages}
       ranges.push({ top: Math.max(0, top), bottom: Math.max(0, bottom) });
     }
 
-    // 对较短的手写笔画也做分页避让，避免刚好把一行注釈切成上下两半。
+    // 对较短的手写笔画也做分页避让，避免刚好把一行書き込み切成上下两半。
     for (const stroke of this.engine?.getStrokes() ?? []) {
       const bounds = this.getStrokeBounds(stroke);
       if (!bounds || bounds.height <= 0 || bounds.height > 180) continue;
@@ -6802,11 +6802,11 @@ svg { overflow: visible !important; }
     }
   }
 
-  // ===== PDF 文本选择与注釈（移植自完整版 V1.3） =====
+  // ===== PDF 文本选择与書き込み（移植自完整版 V1.3） =====
 
   private addPdfTextAnnotation(kind: PdfTextAnnotationKind, colorOverride?: string): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) {
-      new Notice("この版ではPDFの文字注釈を利用できません。");
+      new Notice("この版ではPDFの文字への書き込みを利用できません。");
       return;
     }
 
@@ -6956,7 +6956,7 @@ svg { overflow: visible !important; }
   private createPdfTextMenu(menu: HTMLElement): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) return;
 
-    menu.setAttribute("aria-label", "PDFの文字注釈");
+    menu.setAttribute("aria-label", "PDFの文字への書き込み");
     const actions = menu.createDiv({ cls: "mobile-ink-pdf-menu-actions" });
     this.createPdfMenuButton(actions, "copy", "コピー", () => {
       void this.copyPdfSelectedText();
@@ -6982,7 +6982,7 @@ svg { overflow: visible !important; }
   private createPdfAnnotationMenu(menu: HTMLElement): void {
     if (!this.plugin.hasFeature("pdfTextAnnotation")) return;
 
-    menu.setAttribute("aria-label", "PDFの注釈操作");
+    menu.setAttribute("aria-label", "PDFの書き込み操作");
     menu.createDiv({ cls: "mobile-ink-pdf-annotation-menu-summary" });
     const actions = menu.createDiv({ cls: "mobile-ink-pdf-menu-actions" });
     this.createPdfMenuButton(actions, "copy", "コピー", () => {
@@ -7033,7 +7033,7 @@ svg { overflow: visible !important; }
     this.renderPdfTextAnnotations();
     this.hidePdfAnnotationMenu();
     this.saveQueue?.markDirty();
-    new Notice("PDFの注釈を削除しました。");
+    new Notice("PDFの書き込みを削除しました。");
   }
 
   private estimatePdfTextCharacterWidth(char: string, fontHeight: number): number {
@@ -8276,7 +8276,7 @@ svg { overflow: visible !important; }
 
     try {
       await navigator.clipboard.writeText(text);
-      new Notice("注釈の文字をコピーしました。");
+      new Notice("書き込みの文字をコピーしました。");
     } catch {
       new Notice("コピーできませんでした。端末のコピーメニューを使ってください。");
     }
@@ -8328,7 +8328,7 @@ svg { overflow: visible !important; }
       : annotation.kind === "strikethrough"
         ? "取り消し線"
         : annotation.kind === "note"
-          ? "注釈"
+          ? "書き込み"
           : "ハイライト";
   }
 

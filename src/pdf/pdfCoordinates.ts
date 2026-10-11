@@ -38,14 +38,14 @@ export function toPdfStroke(stroke: InkStroke, pageNumber: number, viewport: Pdf
 
 /** Reproduce v1's uniform page shells, including its fixed 12px page gap and letterboxing. */
 export async function migratePdfAnnotation(legacy: AnnotationFile, pdf: PdfDocument): Promise<PdfAnnotationFile> {
-  if(!Number.isFinite(legacy.pageWidth)||legacy.pageWidth<=0||!Number.isFinite(legacy.pageHeight)||legacy.pageHeight<=0)throw new Error("旧注釈のページ寸法を読み取れません。元の注釈は保持しています。");
+  if(!Number.isFinite(legacy.pageWidth)||legacy.pageWidth<=0||!Number.isFinite(legacy.pageHeight)||legacy.pageHeight<=0)throw new Error("旧書き込みのページ寸法を読み取れません。元の書き込みは保持しています。");
   const gap=12, shellWidth=legacy.pageWidth;
   // Stored height includes every uniform page shell and the gaps, even for mixed-size PDFs.
   const first=(await pdf.getPage(1)).getViewport({scale:1});
   const shellHeight=pdf.numPages===1&&legacy.pageHeight===480
     ? Math.min(480,Math.ceil(first.height*shellWidth/first.width))
     : (legacy.pageHeight-gap*(pdf.numPages-1))/pdf.numPages;
-  if(!(shellHeight>0))throw new Error("旧注釈のページ数とPDFが一致しません。");
+  if(!(shellHeight>0))throw new Error("旧書き込みのページ数とPDFが一致しません。");
   const layouts=new Map<number,{viewport:PdfViewport;offsetY:number}>();
   const getLayout=async(n:number)=>{
     let layout=layouts.get(n);if(layout)return layout;
@@ -60,7 +60,7 @@ export async function migratePdfAnnotation(legacy: AnnotationFile, pdf: PdfDocum
     const bounds=stroke.points.reduce((b,p)=>({min:Math.min(b.min,p.y),max:Math.max(b.max,p.y)}),{min:Infinity,max:-Infinity});
     const min=bounds.min-stroke.width,max=bounds.max+stroke.width;
     const start=Math.max(1,Math.floor(min/(shellHeight+gap))+1),end=Math.min(pdf.numPages,Math.floor(max/(shellHeight+gap))+1);
-    if(start>end)throw new Error("PDFの外側にある旧筆跡を変換できません。元の注釈は保持しています。");
+    if(start>end)throw new Error("PDFの外側にある旧筆跡を変換できません。元の書き込みは保持しています。");
     // A boundary-crossing stroke is represented on each page and clipped by that page.
     for(let n=start;n<=end;n++){
       const {viewport,offsetY}=await getLayout(n),inverse=invertMatrix(viewport.transform);
@@ -70,7 +70,7 @@ export async function migratePdfAnnotation(legacy: AnnotationFile, pdf: PdfDocum
   }
   const annotations:PdfAnnotationFile["pdfTextAnnotations"]=[];
   for(const mark of legacy.pdfTextAnnotations??[]){
-    if(mark.pageNumber<1||mark.pageNumber>pdf.numPages)throw new Error("旧注釈のページ番号とPDFが一致しません。");
+    if(mark.pageNumber<1||mark.pageNumber>pdf.numPages)throw new Error("旧書き込みのページ番号とPDFが一致しません。");
     const {viewport}=await getLayout(mark.pageNumber),inverse=invertMatrix(viewport.transform);
     const sx=shellWidth/(mark.pageWidth||shellWidth),sy=shellHeight/(mark.pageHeight||shellHeight);
     annotations.push({...mark,rotation:viewport.rotation,pageWidth:undefined,pageHeight:undefined,rects:mark.rects.map(r=>transformRect({x:r.x*sx,y:r.y*sy,width:r.width*sx,height:r.height*sy},inverse))});
@@ -81,15 +81,15 @@ export async function migratePdfAnnotation(legacy: AnnotationFile, pdf: PdfDocum
 /** Fail closed instead of silently discarding damaged or future-format annotations. */
 export function validatePdfAnnotation(value: unknown, sourcePath: string, pageCount: number): PdfAnnotationFile {
   const data=value as PdfAnnotationFile;
-  if(!data||data.version!==2||data.kind!=="pdf"||data.coordinateSpace!=="pdf-user-space"||data.sourcePath!==sourcePath||data.pageCount!==pageCount||!Array.isArray(data.strokes)||!Array.isArray(data.pdfTextAnnotations))throw new Error("注釈の形式またはPDFのページ数が一致しません。元の注釈は保持しています。");
+  if(!data||data.version!==2||data.kind!=="pdf"||data.coordinateSpace!=="pdf-user-space"||data.sourcePath!==sourcePath||data.pageCount!==pageCount||!Array.isArray(data.strokes)||!Array.isArray(data.pdfTextAnnotations))throw new Error("書き込みの形式またはPDFのページ数が一致しません。元の書き込みは保持しています。");
   const ids=new Set<string>();
   for(const stroke of data.strokes){
-    if(!stroke||typeof stroke.id!=="string"||ids.has(stroke.id)||!validPage(stroke.pageNumber,pageCount)||!["pen","highlighter"].includes(stroke.tool)||!/^#[\da-f]{6}$/i.test(stroke.color)||!Number.isFinite(stroke.width)||stroke.width<=0||!Array.isArray(stroke.points)||!stroke.points.length||stroke.points.some(p=>!p||![p.x,p.y,p.t,p.pressure].every(Number.isFinite)))throw new Error("保存済みの筆跡を読み取れません。元の注釈は保持しています。");
-    if(stroke.erasures!==undefined && (!Array.isArray(stroke.erasures)||stroke.erasures.some(e=>!e||!Number.isFinite(e.radius)||e.radius<=0||!Array.isArray(e.points)||!e.points.length||e.points.some(p=>!p||!Number.isFinite(p.x)||!Number.isFinite(p.y)))))throw new Error("消しゴムの保存データを読み取れません。元の注釈は保持しています。");
+    if(!stroke||typeof stroke.id!=="string"||ids.has(stroke.id)||!validPage(stroke.pageNumber,pageCount)||!["pen","highlighter"].includes(stroke.tool)||!/^#[\da-f]{6}$/i.test(stroke.color)||!Number.isFinite(stroke.width)||stroke.width<=0||!Array.isArray(stroke.points)||!stroke.points.length||stroke.points.some(p=>!p||![p.x,p.y,p.t,p.pressure].every(Number.isFinite)))throw new Error("保存済みの筆跡を読み取れません。元の書き込みは保持しています。");
+    if(stroke.erasures!==undefined && (!Array.isArray(stroke.erasures)||stroke.erasures.some(e=>!e||!Number.isFinite(e.radius)||e.radius<=0||!Array.isArray(e.points)||!e.points.length||e.points.some(p=>!p||!Number.isFinite(p.x)||!Number.isFinite(p.y)))))throw new Error("消しゴムの保存データを読み取れません。元の書き込みは保持しています。");
     ids.add(stroke.id);
   }
   for(const mark of data.pdfTextAnnotations){
-    if(!mark||typeof mark.id!=="string"||!validPage(mark.pageNumber,pageCount)||!["highlight","underline","strikethrough","note"].includes(mark.kind)||!/^#[\da-f]{6}$/i.test(mark.color)||typeof mark.text!=="string"||!Array.isArray(mark.rects)||!mark.rects.length||mark.rects.some(r=>!r||![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<=0||r.height<=0))throw new Error("保存済みの文字注釈を読み取れません。元の注釈は保持しています。");
+    if(!mark||typeof mark.id!=="string"||!validPage(mark.pageNumber,pageCount)||!["highlight","underline","strikethrough","note"].includes(mark.kind)||!/^#[\da-f]{6}$/i.test(mark.color)||typeof mark.text!=="string"||!Array.isArray(mark.rects)||!mark.rects.length||mark.rects.some(r=>!r||![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<=0||r.height<=0))throw new Error("保存済みの文字への書き込みを読み取れません。元の書き込みは保持しています。");
   }
   return structuredClone(data);
 }

@@ -28,7 +28,7 @@ export class StrokeStore {
     try {
       const raw = await this.app.vault.adapter.read(path);
       const parsed = JSON.parse(raw) as AnnotationFile;
-      if(parsed.version!==undefined&&parsed.version!==1)throw new Error("この注釈は標準PDFビューアで開いてください。");
+      if(parsed.version!==undefined&&parsed.version!==1)throw new Error("この書き込みは標準PDFビューアで開いてください。");
       return {
         version: 1,
         sourcePath,
@@ -42,7 +42,7 @@ export class StrokeStore {
       };
     } catch (error) {
       console.error("Note Ink: failed to read annotation file", error);
-      throw new Error("保存済みの注釈を読み込めません。上書きを防ぐため、ファイルを開くのを中止しました。");
+      throw new Error("保存済みの書き込みを読み込めません。上書きを防ぐため、ファイルを開くのを中止しました。");
     }
   }
 
@@ -66,14 +66,14 @@ export class StrokeStore {
     const sourceMtime=file instanceof TFile?file.stat.mtime:0;
     if(!(await this.app.vault.adapter.exists(path)))return {raw:null,annotation:{version:2,kind:"pdf",coordinateSpace:"pdf-user-space",sourcePath,sourceMtime,pageCount:pdf.numPages,strokes:[],pdfTextAnnotations:[],updatedAt:Date.now()}};
     const raw=await this.app.vault.adapter.read(path);
-    let parsed:any;try {parsed=JSON.parse(raw);}catch {throw new Error("保存済みの注釈を読み込めません。元の注釈は保持しています。");}
+    let parsed:any;try {parsed=JSON.parse(raw);}catch {throw new Error("保存済みの書き込みを読み込めません。元の書き込みは保持しています。");}
     if(parsed.version===2)return {raw,annotation:validatePdfAnnotation(parsed,sourcePath,pdf.numPages)};
-    if(parsed.version!==undefined&&parsed.version!==1)throw new Error("この注釈形式には対応していません。元の注釈は保持しています。");
+    if(parsed.version!==undefined&&parsed.version!==1)throw new Error("この書き込み形式には対応していません。元の書き込みは保持しています。");
     // Reuse v1 validation without allowing a damaged point array to disappear unnoticed.
     const legacy=await this.load(sourcePath,parsed.pageWidth,parsed.pageHeight);
-    if(!Array.isArray(parsed.strokes)||legacy.strokes.length!==parsed.strokes.length||parsed.strokes.some((s:any,i:number)=>!Array.isArray(s.points)||s.points.length!==legacy.strokes[i].points.length))throw new Error("旧筆跡の一部を読み取れません。元の注釈は保持しています。");
+    if(!Array.isArray(parsed.strokes)||legacy.strokes.length!==parsed.strokes.length||parsed.strokes.some((s:any,i:number)=>!Array.isArray(s.points)||s.points.length!==legacy.strokes[i].points.length))throw new Error("旧筆跡の一部を読み取れません。元の書き込みは保持しています。");
     const marks=parsed.pdfTextAnnotations??[];
-    if(!Array.isArray(marks)||marks.length!==legacy.pdfTextAnnotations!.length||marks.some((a:any,i:number)=>!Array.isArray(a.rects)||a.rects.length!==legacy.pdfTextAnnotations![i].rects.length))throw new Error("旧文字注釈の一部を読み取れません。元の注釈は保持しています。");
+    if(!Array.isArray(marks)||marks.length!==legacy.pdfTextAnnotations!.length||marks.some((a:any,i:number)=>!Array.isArray(a.rects)||a.rects.length!==legacy.pdfTextAnnotations![i].rects.length))throw new Error("以前の文字への書き込みの一部を読み取れません。元の書き込みは保持しています。");
     const annotation=await migratePdfAnnotation(legacy,pdf);
     return {raw,annotation:validatePdfAnnotation(annotation,sourcePath,pdf.numPages)};
   }
@@ -82,13 +82,13 @@ export class StrokeStore {
     await this.ensureBaseDir();
     const path=this.getAnnotationPath(annotation.sourcePath);
     const current=await this.app.vault.adapter.exists(path)?await this.app.vault.adapter.read(path):null;
-    if(current!==expectedRaw)throw new Error("別の画面または端末で注釈が更新されました。上書きを止めました。現在の筆跡をPDFへ書き出してから開き直してください。");
+    if(current!==expectedRaw)throw new Error("別の画面または端末で書き込みが更新されました。上書きを止めました。現在の筆跡をPDFへ書き出してから開き直してください。");
     const payload=validatePdfAnnotation({...annotation,updatedAt:Date.now()},annotation.sourcePath,annotation.pageCount);
     const raw=await stringifyJsonOffMainThread(payload,2);
     if(current!==null&&JSON.parse(current).version!==2){
       const backup=`${path}.v1-${stableHash(current)}.bak`;
       if(await this.app.vault.adapter.exists(backup)){
-        if(await this.app.vault.adapter.read(backup)!==current)throw new Error("旧注釈のバックアップ名が重複しました。元の注釈は保持しています。");
+        if(await this.app.vault.adapter.read(backup)!==current)throw new Error("以前の書き込みのバックアップ名が重複しました。元の書き込みは保持しています。");
       }else await this.app.vault.adapter.write(backup,current);
     }
     await this.app.vault.adapter.write(path,raw);

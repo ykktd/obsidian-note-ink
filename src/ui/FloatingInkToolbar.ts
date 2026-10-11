@@ -29,7 +29,7 @@ export class FloatingInkToolbar {
     this.grip.classList.add('note-ink-toolbar-grip');
     this.grip.title = 'ドラッグで移動・矢印キーでも移動';
     this.minimize = button('ツールバーを最小化', 'minus');
-    this.restore = button('注釈ツールバーを開く', 'panel-top-open');
+    this.restore = button('手書きツールバーを開く', 'panel-top-open');
     this.restore.classList.add('note-ink-toolbar-restore'); this.restore.hidden = true;
     this.shell = doc.createElement('div'); this.shell.className = 'note-ink-toolbar-shell';
     this.shell.append(this.grip, dock, this.minimize); root.prepend(this.shell); root.append(this.restore);

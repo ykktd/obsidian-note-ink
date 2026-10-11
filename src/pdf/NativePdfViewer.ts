@@ -28,14 +28,14 @@ export async function connectNativePdf(leaf:WorkspaceLeaf,sourcePath:string):Pro
       if(viewer.pdfDocument)ready();
     }),()=>bus.off("pagesinit",ready));
   }
-  if(leaf.view!==view||view.file?.path!==sourcePath)throw new Error("表示するPDFが変わりました。もう一度、注釈を開いてください。");
+  if(leaf.view!==view||view.file?.path!==sourcePath)throw new Error("表示するPDFが変わりました。もう一度、手書きを始めてください。");
   const pdf=viewer.pdfDocument;
   if(!pdf||typeof pdf.getPage!=="function"||typeof pdf.getData!=="function")throw unsupported();
   return {view,viewer,eventBus:bus,pdf};
 }
-function unsupported():Error{return new Error("このObsidianでは注釈層を接続できません。通常のPDF表示はそのまま使えます。");}
+function unsupported():Error{return new Error("このObsidianでは手書きを始められません。通常のPDF表示はそのまま使えます。");}
 async function deadline<T>(promise:Promise<T>,cleanup=()=>{}):Promise<T>{
   let timer:ReturnType<typeof setTimeout>|undefined;
-  try{return await Promise.race([promise,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error("PDFの準備を待っています。表示が終わってから、もう一度注釈を開いてください。")),15000);})]);}
+  try{return await Promise.race([promise,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error("PDFの準備を待っています。表示が終わってから、もう一度手書きを始めてください。")),15000);})]);}
   finally {clearTimeout(timer);cleanup();}
 }
