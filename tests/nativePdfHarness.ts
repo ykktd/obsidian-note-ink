@@ -1,3 +1,4 @@
+import {highlighterInputChecks} from './highlighterInputChecks';
 import { PDFDocument, StandardFonts, degrees } from "pdf-lib";
 import { FileView, TFile } from "./mockObsidian";
 import NoteInk from "../src/main";
@@ -57,6 +58,7 @@ async function switchFile(){pen(1,170,150);const count=session.controller.annota
 function textSelection(){const span=viewer.getPageView(0).div.querySelector('.textLayer span')!,range=document.createRange();range.selectNodeContents(span);document.getSelection()!.removeAllRanges();document.getSelection()!.addRange(range);const box=span.getBoundingClientRect();viewer.container.dispatchEvent(new MouseEvent('contextmenu',{view:window,bubbles:true,cancelable:true,clientX:box.x+10,clientY:box.y+10}));return {text:document.getSelection()!.toString(),menu:document.querySelector('.test-menu')?.textContent};}
 w.nativeHarness={open,pen,point,finger,snapshot,saveReload,saveFailure,exportCheck,switchFile,textSelection,get session(){return plugin.pdfSessions.get(leaf)??session;},refreshSession(){session=plugin.pdfSessions.get(leaf)??session;},get viewer(){return viewer;},get view(){return view;},get pdf(){return pdf;},get plugin(){return plugin;},get disk(){return disk;}};
 w.nativeReady=true;
+w.nativeHarness.highlighterInputChecks=()=>highlighterInputChecks(w.nativeHarness);
 
 w.nativeHarness.cutoutExport=async()=>{
  const bytes=await exportNativePdf(pdf,session.controller.annotation,()=>{}),copy=await core.getDocument({data:bytes.slice(),isEvalSupported:false}).promise;

@@ -230,6 +230,14 @@ export class InkEngine {
     if (!this.inputEnabled) return;
     if (!this.isEventInsideAnnotation(event)) return;
 
+    // A Pencil contact can emit both event families. Once Touch owns it,
+    // a companion pointerdown must not commit its starting point as a dot.
+    if (this.activeTouchId !== null && event.pointerType !== "mouse") {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (this.shouldIgnoreSuppressedTouchPointer(event)) {
       this.debugIgnoredPointerEvent("ignore-pointerdown", event, "suppressed-touch");
       return;
@@ -439,6 +447,27 @@ export class InkEngine {
     event.stopPropagation();
     this.clearTextSelection();
     this.debugTouchEvent("touchstart", touch, event);
+
+    // iPad may deliver pointerdown before the matching stylus touchstart.
+    // Transfer ownership without committing ink, ending input, or resetting
+    // eraser history; subsequent pointer events cannot restart this stroke.
+    if (this.activePointerId !== null) {
+      const pointerId = this.activePointerId;
+      this.activePointerId = null;
+      this.activeTouchId = touch.identifier;
+      this.clearCancelGraceTimer();
+      this.clearPredictedStroke();
+      this.safeReleasePointer(pointerId);
+      if (this.activeStroke) {
+        const previousPointCount = this.activeStroke.points.length;
+        this.appendTouchPoint(this.activeStroke, touch, event);
+        this.renderLiveIncrement(this.activeStroke, previousPointCount);
+      } else if (this.toolState.tool === "eraser") {
+        this.eraseAtTouch(touch, event);
+      }
+      this.notePenActivity();
+      return;
+    }
 
     if (this.tryResumeTouchStroke(touch, event)) return;
 
