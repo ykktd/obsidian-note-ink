@@ -47,7 +47,8 @@ export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height
   ctx.clearRect(0, 0, width, height);
 }
 
-// Widths depend only on earlier samples, so streaming and full redraw agree.
+// Use the selected width everywhere: pressure, speed and stroke position do not
+// change it. The same widths drive live ink, redraw/export and eraser hit testing.
 const widthCache = new WeakMap<InkStroke, { base: number; points: InkPoint[]; widths: number[] }>();
 export function strokeWidths(stroke: InkStroke): readonly number[] {
   let cache = widthCache.get(stroke);
@@ -56,11 +57,7 @@ export function strokeWidths(stroke: InkStroke): readonly number[] {
   }
   const widths=cache.widths;
   for(let i=widths.length;i<stroke.points.length;i++) {
-    const p=stroke.points[i], prev=stroke.points[i-1];
-    const speed=prev ? Math.hypot(p.x-prev.x,p.y-prev.y)/Math.max(1,p.t-prev.t) : 0;
-    let raw=stroke.width*(.4+Math.max(0,Math.min(1,p.pressure))*.8)*Math.max(.8,1-speed*.015);
-    if(i<3)raw*=.6+.4*(i/2);
-    widths.push(i===0 ? raw : .6*raw+.4*widths[i-1]);
+    widths.push(stroke.width);
   }
   return widths;
 }

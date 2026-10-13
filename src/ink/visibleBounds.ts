@@ -2,7 +2,7 @@ import type { InkStroke } from './types';
 import { strokeBounds, type Bounds } from './lasso';
 import { drawStrokes, setupCanvas } from './renderer';
 
-/** Measure actual painted ink, including pressure, curves and per-stroke cutouts.
+/** Measure actual painted ink, including line width, curves and per-stroke cutouts.
  * Only used when establishing a selection, never during pointer movement. */
 export function visibleInkBounds(strokes:readonly InkStroke[],doc:Document):Bounds|null{
   const raw=strokeBounds(strokes);if(!raw)return null;
