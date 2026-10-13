@@ -195,7 +195,15 @@ async function pinchChecks(){
  const touch=(id:number,x:number)=>({identifier:id,target,clientX:x,clientY:240,pageX:x,pageY:240,screenX:x,screenY:240}) as Touch;
  const send=(type:string,ts:Touch[])=>{const event=new Event(type,{bubbles:true,cancelable:true});const list=Object.assign(ts,{item:(i:number)=>ts[i]});for(const key of ['touches','targetTouches','changedTouches'])Object.defineProperty(event,key,{value:list});target.dispatchEvent(event);};
  send('touchstart',[touch(1,150),touch(2,250)]);send('touchmove',[touch(1,100),touch(2,300)]);
- const active=!!view.pinchZoomState;send('touchend',[]);await frame();await new Promise(r=>setTimeout(r,950));
- return {active,ended:view.pinchZoomState===null,zoom:view.zoom,saved:sidecars.has(plugin.store.getAnnotationPath(sourcePath)),paused:view.saveQueue.paused};
+ const active=!!view.pinchZoomState;send('touchend',[]);await frame();
+ const initial=view.pageFrameEl.getBoundingClientRect(),anchor={x:(200-initial.left)/view.zoom,y:(240-initial.top)/view.zoom};
+ const anchorErrors:number[]=[];
+ send('touchstart',[touch(1,150),touch(2,250)]);
+ for(const [factor,dx]of [[1.25,0],[1.6,35],[1.6,60],[1.25,20],[1,0]]){
+  send('touchmove',[touch(1,200+dx-50*factor),touch(2,200+dx+50*factor)]);await frame();
+  const r=view.pageFrameEl.getBoundingClientRect();anchorErrors.push(Math.hypot(r.left+anchor.x*view.zoom-200-dx,r.top+anchor.y*view.zoom-240));
+ }
+ send('touchend',[]);await frame();await new Promise(r=>setTimeout(r,950));
+ return {anchorErrors,active,ended:view.pinchZoomState===null,zoom:view.zoom,saved:sidecars.has(plugin.store.getAnnotationPath(sourcePath)),paused:view.saveQueue.paused};
 }
 (window as any).harness={boundaryChecks,pinchChecks,interactionChecks,renderingChecks,performanceFixture,rejectedSidecar,open,addTestInk,verifyExport,files,sidecars,get view(){return view;},fixture,exportAnnotatedPdf,loadPdfJs};

@@ -28,7 +28,7 @@ try{for(const browserName of ['webkit','chromium']){
  for(const result of rendering){assert.equal(result.stable,true);assert.ok(result.maxDifference<=5,JSON.stringify(result));}
  const boundaries=await page.evaluate(()=>window.harness.boundaryChecks());
  assert.deepEqual(boundaries,{drawn:1,replicas:[1,1],undone:0,redone:1,erased:0,restored:1,reloaded:1,untouched:1});
- const pinch=await page.evaluate(()=>window.harness.pinchChecks());assert.ok(pinch.active&&pinch.ended&&pinch.saved&&!pinch.paused);assert.equal(pinch.zoom,2);
+ const pinch=await page.evaluate(()=>window.harness.pinchChecks());assert.ok(pinch.active&&pinch.ended&&pinch.saved&&!pinch.paused);assert.equal(pinch.zoom,2);assert.ok(pinch.anchorErrors.every(error=>error<2),JSON.stringify(pinch));
  const checks=await page.evaluate(()=>window.harness.interactionChecks());
  assert.equal(checks.two,2);assert.equal(checks.one,1);assert.equal(checks.zero,0);assert.equal(checks.restored,2);
  assert.equal(checks.dotPoints,1);assert.equal(checks.palmStrokes,1);assert.equal(checks.cancelled,1);assert.equal(checks.cancelledUndo,0);

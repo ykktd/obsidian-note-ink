@@ -4,6 +4,7 @@ import { SaveQueue } from "../ink/SaveQueue";
 import type { StrokeStore } from "../ink/StrokeStore";
 import type { InkTool, PdfTextAnnotation } from "../ink/types";
 import { NativePdfLasso } from "./NativePdfLasso";
+import { NativePdfPinchZoom } from "./NativePdfPinchZoom";
 import { NativePdfInkController } from "./NativePdfInkController";
 import { connectNativePdf, type NativePdfBinding } from "./NativePdfViewer";
 import { invertMatrix, transformPoint } from "./exportAnnotatedPdf";
@@ -19,6 +20,7 @@ export class NativePdfAnnotationSession {
   private buttons=new Map<string,HTMLButtonElement>();
   private lassoMode=false;
   private lasso:NativePdfLasso;
+  private pinchZoom:NativePdfPinchZoom;
   private drawingTool:InkTool="pen";
   private width:HTMLInputElement;
   private color:HTMLInputElement;
@@ -70,6 +72,9 @@ export class NativePdfAnnotationSession {
     }
     this.tools.append(this.eraserModes);
     this.lasso=new NativePdfLasso(binding,this.controller,()=>this.app.workspace.activeLeaf?.view===this.binding.view);
+    this.pinchZoom=new NativePdfPinchZoom(binding.viewer,()=>{
+      this.controller.flushPendingStrokes();this.controller.setInputEnabled(false);this.lasso.refresh();this.queue.setPaused(true);
+    },()=>{this.controller.setInputEnabled(!this.lassoMode);this.queue.setPaused(false);});
     button("undo","undo-2","元に戻す",()=>this.controller.undo());button("redo","redo-2","やり直す",()=>this.controller.redo());
     button("save","save","書き込みを保存",()=>{void this.save().catch(()=>{});});
     this.floatingToolbar=new FloatingInkToolbar(content,this.tools,dock,this.eraserModes,this.buttons.get("eraser")!);
@@ -95,7 +100,7 @@ export class NativePdfAnnotationSession {
   /** Plugin unload cannot await Obsidian's hook; start the final save before removing listeners. */
   unload():void{void this.close().catch(error=>{console.error("Note Ink: final PDF save failed",error);this.destroy();new Notice("書き込みの最終保存に失敗しました。プラグインを閉じる前に保存を確認してください。",10000);});}
   private destroy():void{
-    if(this.disposed)return;this.disposed=true;this.floatingToolbar.destroy();this.lasso.destroy();this.controller.destroy();this.queue.setPaused(true);
+    if(this.disposed)return;this.disposed=true;this.pinchZoom.destroy();this.floatingToolbar.destroy();this.lasso.destroy();this.controller.destroy();this.queue.setPaused(true);
     this.tools.remove();for(const action of this.actions)action.remove();this.errorEl?.remove();
     this.binding.viewer.container.removeEventListener("contextmenu",this.onContextMenu,true);this.doc.removeEventListener("keydown",this.onKeyDown,true);
     if(this.binding.view.onUnloadFile===this.unloadHook)this.binding.view.onUnloadFile=this.originalUnload;

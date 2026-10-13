@@ -6,6 +6,7 @@ export type NativeEventBus = {on(name:string,callback:(data?:any)=>void):void;of
 export type NativeViewer = {
   container:HTMLElement;viewer:HTMLElement;pdfDocument:PdfDocument;pagesCount:number;
   currentPageNumber:number;currentScale:number;pagesRotation:number;
+  updateScale?(options:{scaleFactor:number;drawingDelay?:number}):void;
   getPageView(index:number):NativePageView;getCachedPageViews():Set<NativePageView>;
 };
 export type NativePdfBinding = {view:any;viewer:NativeViewer;eventBus:NativeEventBus;pdf:PdfDocument};

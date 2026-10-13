@@ -241,4 +241,5 @@ export type SelectionDragState = {
 export type PinchZoomState = {
   startDistance: number;
   startZoom: number;
+  anchor: { x: number; y: number };
 };

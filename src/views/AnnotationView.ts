@@ -1632,7 +1632,9 @@ export class AnnotationView extends FileView {
     if (this.getZoomTouches(event).length !== 2) return;
 
     const distance = this.getTouchDistance(this.getZoomTouches(event));
-    if (distance <= 0) return;
+    const center = this.getTouchCenter(this.getZoomTouches(event));
+    const frame = this.pageFrameEl?.getBoundingClientRect();
+    if (distance <= 0 || !center || !frame) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -1644,7 +1646,8 @@ export class AnnotationView extends FileView {
     ((...args: any[]) => (null as any))();
     this.pinchZoomState = {
       startDistance: distance,
-      startZoom: this.zoom
+      startZoom: this.zoom,
+      anchor: { x: (center.x - frame.left) / this.zoom, y: (center.y - frame.top) / this.zoom }
     };
     this.engine?.setInputEnabled(false);
     this.enterInkInteractionMode();
@@ -1666,7 +1669,7 @@ export class AnnotationView extends FileView {
     event.preventDefault();
     event.stopPropagation();
     this.markPdfInteractionBusy();
-    this.setZoom(this.pinchZoomState.startZoom * (distance / this.pinchZoomState.startDistance), center.x, center.y);
+    this.setZoom(this.pinchZoomState.startZoom * (distance / this.pinchZoomState.startDistance), center.x, center.y, this.pinchZoomState.anchor);
   };
 
   private onZoomTouchEnd = (event: TouchEvent): void => {
@@ -1705,9 +1708,9 @@ export class AnnotationView extends FileView {
     };
   }
 
-  private setZoom(nextZoom: number, clientX?: number, clientY?: number): void {
+  private setZoom(nextZoom: number, clientX?: number, clientY?: number, pinchAnchor?: { x: number; y: number }): void {
     const next = this.clampZoom(nextZoom);
-    if (Math.abs(next - this.zoom) < 0.001) return;
+    if (Math.abs(next - this.zoom) < 0.001 && !pinchAnchor) return;
 
     const scroll = this.scrollEl;
     if (!scroll) {
@@ -1722,22 +1725,18 @@ export class AnnotationView extends FileView {
     const rect = scroll.getBoundingClientRect();
     const anchorX = clientX ?? rect.left + rect.width / 2;
     const anchorY = clientY ?? rect.top + rect.height / 2;
-    const viewportX = anchorX - rect.left;
-    const viewportY = anchorY - rect.top;
-    const oldFrameLeft = this.pageFrameEl?.offsetLeft ?? 0;
-    const oldFrameTop = this.pageFrameEl?.offsetTop ?? 0;
-    const logicalX = (scroll.scrollLeft + viewportX - oldFrameLeft) / this.zoom;
-    const logicalY = (scroll.scrollTop + viewportY - oldFrameTop) / this.zoom;
+    const oldFrame = this.pageFrameEl?.getBoundingClientRect() ?? rect;
+    const logicalX = pinchAnchor?.x ?? (anchorX - oldFrame.left) / this.zoom;
+    const logicalY = pinchAnchor?.y ?? (anchorY - oldFrame.top) / this.zoom;
 
     this.zoom = next;
     this.applyZoom();
     this.scheduleInkDisplayScaleUpdate();
     this.markPdfInteractionBusy();
 
-    const newFrameLeft = this.pageFrameEl?.offsetLeft ?? 0;
-    const newFrameTop = this.pageFrameEl?.offsetTop ?? 0;
-    scroll.scrollLeft = Math.max(0, newFrameLeft + logicalX * this.zoom - viewportX);
-    scroll.scrollTop = Math.max(0, newFrameTop + logicalY * this.zoom - viewportY);
+    const newFrame = this.pageFrameEl?.getBoundingClientRect() ?? rect;
+    scroll.scrollLeft += newFrame.left + logicalX * this.zoom - anchorX;
+    scroll.scrollTop += newFrame.top + logicalY * this.zoom - anchorY;
     this.refreshToolbarState();
     this.pdfPageNavigator.queueUpdate();
   }
