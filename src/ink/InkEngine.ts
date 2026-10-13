@@ -232,7 +232,7 @@ export class InkEngine {
 
     // A Pencil contact can emit both event families. Once Touch owns it,
     // a companion pointerdown must not commit its starting point as a dot.
-    if (this.activeTouchId !== null && event.pointerType !== "mouse") {
+    if (this.toolState.tool !== "eraser" && this.activeTouchId !== null && event.pointerType !== "mouse") {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -259,6 +259,20 @@ export class InkEngine {
     const wantsWrite = this.shouldWrite(event);
     if (!wantsWrite) {
       this.debugIgnoredPointerEvent("ignore-pointerdown", event, "pan-mode");
+    }
+
+    // Erasing must follow Pencil pointer updates even when Touch started first
+    // or was cancelled. Keep one gesture, undo snapshot and save pause.
+    if (this.toolState.tool === "eraser" && event.pointerType === "pen" && this.activeTouchId !== null) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.clearCancelGraceTimer();
+      this.activeTouchId = null;
+      this.activePointerId = event.pointerId;
+      this.capturePointerIfUseful(event);
+      this.notePenActivity();
+      this.eraseAtEvent(event);
+      return;
     }
 
     if (wantsWrite && this.tryResumePointerStroke(event)) return;
@@ -447,6 +461,10 @@ export class InkEngine {
     event.stopPropagation();
     this.clearTextSelection();
     this.debugTouchEvent("touchstart", touch, event);
+
+    // A companion touchstart must not divert a working eraser pointer stream.
+    // If Pointer was cancelled, the handoff below still allows Touch fallback.
+    if (this.toolState.tool === "eraser" && this.activePointerId !== null && this.cancelGraceTimer === null) return;
 
     // iPad may deliver pointerdown before the matching stylus touchstart.
     // Transfer ownership without committing ink, ending input, or resetting
