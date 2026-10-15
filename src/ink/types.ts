@@ -190,6 +190,8 @@ export type InkEngineOptions = {
   initialToolState?: Partial<InkToolState>;
   canvasMaxDpr?: number;
   canvasMaxPixels?: number;
+  canvasPixelRatio?: number;
+  canvasRegion?: {x:number;y:number;width:number;height:number};
   inputBounds?: {
     top: number;
     bottom: number;

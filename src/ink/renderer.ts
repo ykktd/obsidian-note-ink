@@ -1,9 +1,15 @@
 import { InkPoint, InkStroke } from "./types";
 
+export type CanvasRegion = { x: number; y: number; width: number; height: number };
+
 export type CanvasSetupOptions = {
   maxDpr?: number;
   maxPixels?: number;
   displayScale?: number;
+  /** Explicit backing pixels per document unit, including the viewer zoom. */
+  pixelRatio?: number;
+  /** Rasterize only this region while retaining full-document drawing coordinates. */
+  region?: CanvasRegion;
 };
 
 export function setupCanvas(
@@ -12,28 +18,39 @@ export function setupCanvas(
   height: number,
   options: CanvasSetupOptions = {}
 ): CanvasRenderingContext2D {
-  const deviceDpr = Math.max(1, window.devicePixelRatio || 1);
+  const deviceDpr = Math.max(1, canvas.ownerDocument.defaultView?.devicePixelRatio || 1);
   const baseDpr = Number.isFinite(options.maxDpr) && options.maxDpr && options.maxDpr > 0
     ? Math.min(deviceDpr, options.maxDpr) : deviceDpr;
   const displayScale = Number.isFinite(options.displayScale) && options.displayScale && options.displayScale > 0
     ? options.displayScale : 1;
   
-  const targetDpr = Math.min(baseDpr * displayScale, options.maxDpr ?? Number.POSITIVE_INFINITY);
+  const targetDpr = Number.isFinite(options.pixelRatio) && options.pixelRatio! > 0
+    ? options.pixelRatio! : Math.min(baseDpr * displayScale, options.maxDpr ?? Number.POSITIVE_INFINITY);
   const pixelCap = Number.isFinite(options.maxPixels) && options.maxPixels && options.maxPixels > 0
     ? options.maxPixels : Number.POSITIVE_INFINITY;
     
-  const maxByPixels = Math.sqrt(pixelCap / Math.max(1, width * height));
+  const region = options.region ?? {x:0,y:0,width,height};
+  const maxByPixels = Math.sqrt(pixelCap / Math.max(1, region.width * region.height));
   const dpr = Math.min(targetDpr, maxByPixels);
   
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  canvas.width = Math.max(1, Math.floor(width * dpr));
-  canvas.height = Math.max(1, Math.floor(height * dpr));
+  if (options.region) {
+    canvas.style.left = `${region.x / width * 100}%`;
+    canvas.style.top = `${region.y / height * 100}%`;
+    canvas.style.width = `${region.width / width * 100}%`;
+    canvas.style.height = `${region.height / height * 100}%`;
+    canvas.style.right = canvas.style.bottom = 'auto';
+  } else {
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+  }
+  canvas.width = Math.max(1, Math.floor(region.width * dpr));
+  canvas.height = Math.max(1, Math.floor(region.height * dpr));
   
   const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
   if (!ctx) throw new Error("Unable to create 2D canvas context");
   
-  ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
+  const sx=canvas.width / region.width, sy=canvas.height / region.height;
+  ctx.setTransform(sx, 0, 0, sy, -region.x*sx, -region.y*sy);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   return ctx;

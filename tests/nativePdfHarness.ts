@@ -1,4 +1,5 @@
 import {highlighterInputChecks} from './highlighterInputChecks';
+import {rasterChecks} from './rasterChecks';
 import {eraserInputChecks} from './eraserInputChecks';
 import {fixedWidthChecks} from './fixedWidthChecks';
 import { PDFDocument, StandardFonts, degrees } from "pdf-lib";
@@ -18,13 +19,13 @@ const source='講義/標準ビューア.pdf';const file=new TFile(source);
 const app:any={vault:{getAbstractFileByPath:(p:string)=>files.has(p)?p===source?file:new TFile(p):null,readBinary:async(f:TFile)=>files.get(f.path)!.slice().buffer,createBinary:async(p:string,b:ArrayBuffer)=>{if(files.has(p))throw new Error('exists');files.set(p,new Uint8Array(b));},adapter:{exists:async(p:string)=>disk.has(p)||files.has(p),mkdir:async()=>{},read:async(p:string)=>disk.get(p)!,write:async(p:string,raw:string)=>{if(failing&&p.endsWith('.ink.json'))throw new Error('disk full');disk.set(p,raw);}}},workspace:{activeLeaf:null,revealLeaf:()=>{},getActiveFile:()=>file,getActiveViewOfType:()=>null,getLeavesOfType:(type:string)=>type==='pdf'&&leaf?[leaf]:[],detachLeavesOfType:()=>{}}};
 const plugin:any=new NoteInk(app,{} as any);plugin.store=new StrokeStore(app,plugin);plugin.settings={openPdfWithAnnotationByDefault:false};
 let leaf:any,view:any,session:NativePdfAnnotationSession,pdf:any,viewer:any,bus:any,legacyRaw:string;
-async function fixture(count=50){
+async function fixture(count=50,pageSize?:[number,number]){
  const doc=await PDFDocument.create(),font=await doc.embedFont(StandardFonts.Helvetica);
- for(let n=1;n<=count;n++){const p=doc.addPage(n%7===0?[500,380]:[420,320]);p.setCropBox(20,10,p.getWidth()-40,p.getHeight()-30);p.setRotation(degrees((n-1)%4*90));p.drawText(`Native PDF page ${n}`,{x:40,y:270,size:18,font});p.drawText('Original text remains selectable',{x:40,y:245,size:12,font});}
+ for(let n=1;n<=count;n++){const p=doc.addPage(pageSize??(n%7===0?[500,380]:[420,320]));p.setCropBox(20,10,p.getWidth()-40,p.getHeight()-30);p.setRotation(degrees((n-1)%4*90));p.drawText(`Native PDF page ${n}`,{x:40,y:270,size:18,font});p.drawText('Original text remains selectable',{x:40,y:245,size:12,font});}
  return doc.save();
 }
-async function open(){
- files.set(source,await fixture());files.set('講義/別資料.pdf',await fixture(2));
+async function open(pageSize?:[number,number]){
+ files.set(source,await fixture(50,pageSize));files.set('講義/別資料.pdf',await fixture(2));
  leaf={app,getViewState:()=>({type:'pdf',state:{file:source}}),setViewState:async()=>{},view:null};app.workspace.activeLeaf=leaf;
  view=new FileView(leaf);view.getViewType=()=>"pdf";view.onUnloadFile=async()=>{};view.onClose=async()=>{};view.file=file;leaf.view=view;
  view.contentEl.classList.add('pdf-container');view.contentEl.style.position='relative';
@@ -63,6 +64,7 @@ w.nativeReady=true;
 w.nativeHarness.eraserInputChecks=()=>eraserInputChecks(w.nativeHarness);
 w.nativeHarness.fixedWidthChecks=fixedWidthChecks;
 w.nativeHarness.highlighterInputChecks=()=>highlighterInputChecks(w.nativeHarness);
+w.nativeHarness.rasterChecks=rasterChecks;
 
 w.nativeHarness.cutoutExport=async()=>{
  const bytes=await exportNativePdf(pdf,session.controller.annotation,()=>{}),copy=await core.getDocument({data:bytes.slice(),isEvalSupported:false}).promise;

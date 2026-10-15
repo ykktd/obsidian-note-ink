@@ -75,8 +75,8 @@ export class InkEngine {
   }
 
   resize(width: number, height: number): void {
-    this.width = Math.max(1, Math.ceil(width));
-    this.height = Math.max(1, Math.ceil(height));
+    this.width = Math.max(1, this.options.canvasRegion ? width : Math.ceil(width));
+    this.height = Math.max(1, this.options.canvasRegion ? height : Math.ceil(height));
     this.committedCtx = this.setupInkCanvas(this.committedCanvas, this.displayScale);
     this.liveCtx = this.setupInkCanvas(this.liveCanvas, this.displayScale);
     this.predictedStrokeRendered = false;
@@ -165,6 +165,14 @@ export class InkEngine {
     this.resize(this.width,this.height);
   }
 
+  /** Scroll/resize can move the raster window without moving or ending a stroke. */
+  setCanvasRegion(region:NonNullable<InkEngineOptions['canvasRegion']>,pixelRatio:number):void {
+    const old=this.options.canvasRegion;
+    if(old&&old.x===region.x&&old.y===region.y&&old.width===region.width&&old.height===region.height&&this.options.canvasPixelRatio===pixelRatio)return;
+    this.options.canvasRegion=region;this.options.canvasPixelRatio=pixelRatio;
+    this.resize(this.width,this.height);
+  }
+
 
   setToolState(patch: Partial<InkToolState>): void {
     this.toolState = { ...this.toolState, ...patch };
@@ -221,6 +229,8 @@ export class InkEngine {
     return setupCanvas(canvas, this.width, this.height, {
       maxDpr: this.options.canvasMaxDpr,
       maxPixels: this.options.canvasMaxPixels,
+      pixelRatio: this.options.canvasPixelRatio,
+      region: this.options.canvasRegion,
       displayScale
     });
   }
@@ -965,7 +975,7 @@ export class InkEngine {
   }
 
   private getCanvasPointMapping(): CanvasPointMapping {
-    const rect = this.liveCanvas.getBoundingClientRect();
+    const rect = this.inputRect();
     return {
       left: rect.left,
       top: rect.top,
@@ -975,7 +985,7 @@ export class InkEngine {
   }
 
   private isClientInsideCanvas(clientX: number, clientY: number): boolean {
-    const rect = this.liveCanvas.getBoundingClientRect();
+    const rect = this.inputRect();
     return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
   }
 
@@ -986,7 +996,7 @@ export class InkEngine {
     const bounds = this.options.inputBounds;
     if (!bounds) return true;
 
-    const rect = this.liveCanvas.getBoundingClientRect();
+    const rect = this.inputRect();
     const scaleY = this.height / Math.max(1, rect.height);
     const localY = (clientY - rect.top) * scaleY;
     const top = Math.max(0, Math.min(this.height, bounds.top));
@@ -995,11 +1005,16 @@ export class InkEngine {
   }
 
   private isNearCanvas(clientX: number, clientY: number, margin: number): boolean {
-    const rect = this.liveCanvas.getBoundingClientRect();
+    const rect = this.inputRect();
     return clientX >= rect.left - margin
       && clientX <= rect.right + margin
       && clientY >= rect.top - margin
       && clientY <= rect.bottom + margin;
+  }
+
+  private inputRect():DOMRect {
+    // A cropped bitmap is not the page coordinate system used by saved strokes.
+    return (this.options.canvasRegion&&this.options.inputRoot?this.options.inputRoot:this.liveCanvas).getBoundingClientRect();
   }
 
   private isEventInsideAnnotation(event: Event): boolean {

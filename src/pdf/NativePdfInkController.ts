@@ -4,8 +4,9 @@ import { drawStrokes, setupCanvas } from "../ink/renderer";
 import type { InkStroke, InkToolState, PdfAnnotationFile, PdfInkStroke } from "../ink/types";
 import { toPdfStroke, toViewportStroke, pdfMarkShapes, type PdfViewport } from "./pdfCoordinates";
 import type { NativePageView, NativePdfBinding } from "./NativePdfViewer";
+import { nativeInkRaster, NATIVE_INK_MAX_PIXELS, type InkRaster } from './nativeInkRaster';
 
-type Layer={page:NativePageView;el:HTMLDivElement;canvas:HTMLCanvasElement;marks:SVGSVGElement;revision:number;rotation:number};
+type Layer={page:NativePageView;el:HTMLDivElement;canvas:HTMLCanvasElement;marks:SVGSVGElement;revision:number;rotation:number;rasterKey:string};
 type Input={page:NativePageView;viewport:PdfViewport;engine:InkEngine;committed:HTMLCanvasElement;live:HTMLCanvasElement;width:number;height:number;reference:readonly InkStroke[]};
 type Options={onChange():void;onInputStart():void;onInputEnd():void;onDocumentChanged():void};
 const defaults:InkToolState={tool:"pen",color:"#111111",width:2,highlighterColor:"#ffd54a",highlighterWidth:14,eraserRadius:18,eraserMode:"partial",acceptTouchInput:false};
@@ -21,6 +22,7 @@ export class NativePdfInkController {
   private input:Input|null=null;
   private raf:number|null=null;
   private observer:MutationObserver;
+  private resizeObserver:ResizeObserver;
   private disposed=false;
   private applying=false;
   private penPage:HTMLElement|null=null;
@@ -35,6 +37,9 @@ export class NativePdfInkController {
     for(const name of events)binding.eventBus.on(name,this.onViewerEvent);
     this.observer=new MutationObserver(()=>this.queueSync());
     this.observer.observe(binding.viewer.viewer,{subtree:true,childList:true});
+    this.resizeObserver=new ResizeObserver(()=>this.queueSync());
+    this.resizeObserver.observe(binding.viewer.container);
+    this.win.addEventListener("resize",this.onResize);
     binding.viewer.container.addEventListener("scroll",this.onScroll,{passive:true});
     this.win.addEventListener("pointerdown",this.preparePointer,true);
     this.win.addEventListener("pointermove",this.showCursor,true);
@@ -74,6 +79,7 @@ export class NativePdfInkController {
     if(this.disposed)return;this.releaseInput();this.disposed=true;this.restorePenPage();
     if(this.raf!==null)this.win.cancelAnimationFrame(this.raf);this.raf=null;
     this.observer.disconnect();for(const name of events)this.binding.eventBus.off(name,this.onViewerEvent);
+    this.resizeObserver.disconnect();this.win.removeEventListener("resize",this.onResize);
     this.binding.viewer.container.removeEventListener("scroll",this.onScroll);
     this.win.removeEventListener("pointerdown",this.preparePointer,true);
     this.win.removeEventListener("pointermove",this.showCursor,true);
@@ -96,6 +102,7 @@ export class NativePdfInkController {
     this.queueSync();
   };
   private onScroll=():void=>{this.hideCursor();if(!this.isInputActive())this.releaseInput();this.queueSync();};
+  private onResize=():void=>{this.queueSync();};
   private queueSync():void{
     if(this.disposed||this.raf!==null)return;
     this.raf=this.win.requestAnimationFrame(()=>{this.raf=null;this.sync();});
@@ -103,12 +110,13 @@ export class NativePdfInkController {
   private sync():void{
     if(this.disposed||this.binding.viewer.pdfDocument!==this.binding.pdf)return;
     if(this.input&&(!this.input.live.isConnected||this.input.viewport.rotation!==this.input.page.viewport.rotation))this.releaseInput();
+    if(this.input){const raster=this.rasterFor(this.input.page,this.input.viewport);this.input.engine.setCanvasRegion(raster.region,raster.pixelRatio);}
     const box=this.binding.viewer.container.getBoundingClientRect(),wanted=new Set<number>();
     for(const div of this.binding.viewer.viewer.querySelectorAll<HTMLElement>(".page[data-page-number]")){
       const page=this.binding.viewer.getPageView(Number(div.dataset.pageNumber)-1);
       if(!page||page.div!==div)continue;
       if(!page.pdfPage)continue;const rect=page.div.getBoundingClientRect();
-      if(rect.bottom<box.top-100||rect.top>box.bottom+100)continue;
+      if(rect.bottom<box.top-100||rect.top>box.bottom+100||rect.right<box.left-100||rect.left>box.right+100)continue;
       if(!this.annotation.strokes.some(s=>s.pageNumber===page.id)&&!this.annotation.pdfTextAnnotations.some(a=>a.kind!=="note"&&a.pageNumber===page.id))continue;
       wanted.add(page.id);this.updateLayer(page);
     }
@@ -122,29 +130,44 @@ export class NativePdfInkController {
       el.className="note-ink-native-overlay";el.setAttribute("aria-hidden","true");
       el.dataset.pageNumber=String(page.id);
       const marks=this.doc.createElementNS("http://www.w3.org/2000/svg","svg");marks.setAttribute("preserveAspectRatio","none");el.append(marks,canvas);
-      layer={page,el,canvas,marks,revision:-1,rotation:NaN};this.layers.set(page.id,layer);
+      layer={page,el,canvas,marks,revision:-1,rotation:NaN,rasterKey:""};this.layers.set(page.id,layer);
+      // Native PDF layout can settle after scalechanging/pagerendered, especially
+      // in WebKit. Observe actual page geometry instead of relying on event order.
+      this.resizeObserver.observe(page.div);
     }
     if(layer.el.parentElement!==page.div)page.div.append(layer.el);
     const viewport=page.pdfPage!.getViewport({scale:1,rotation:page.viewport.rotation});
     const revision=this.revisions.get(page.id)??0;
+    const raster=this.rasterFor(page,viewport);
     // Keep all painting in a page-local HTML canvas. A canvas in SVG foreignObject
     // is composited at the wrong origin/scale in WebKit, unlike the live HTML canvas.
     if(layer.revision!==revision || layer.rotation!==viewport.rotation){
-      const dpr=Math.max(.25,Math.min(3,page.viewport.scale*(this.win.devicePixelRatio||1)));
-      const ctx=setupCanvas(layer.canvas,viewport.width,viewport.height,{maxDpr:dpr,maxPixels:1_000_000});
-      layer.canvas.style.width=layer.canvas.style.height="100%";
       layer.marks.setAttribute("viewBox",`0 0 ${viewport.width} ${viewport.height}`);layer.marks.replaceChildren();
       for(const mark of this.annotation.pdfTextAnnotations.filter(a=>a.kind!=="note"&&a.pageNumber===page.id))for(const r of pdfMarkShapes(mark,page.pdfPage!,viewport)){
         const rect=this.doc.createElementNS(layer.marks.namespaceURI,"rect");
         for(const [key,value]of Object.entries(r))rect.setAttribute(key,String(value));
         rect.setAttribute("fill",mark.color);rect.setAttribute("opacity",mark.kind==="underline"||mark.kind==="strikethrough"?".86":".42");layer.marks.append(rect);
       }
-      drawStrokes(ctx,this.annotation.strokes.filter(s=>s.pageNumber===page.id).map(s=>toViewportStroke(s,viewport)));
-      layer.revision=revision;layer.rotation=viewport.rotation;this.diagnostics.displayRenders++;
     }
-    layer.canvas.style.visibility=this.input?.page.id===page.id?"hidden":"visible";
+    if(this.input?.page.id===page.id){
+      // Do not retain a third high-resolution bitmap behind the two input layers.
+      layer.canvas.style.visibility="hidden";
+      if(layer.canvas.width||layer.canvas.height)layer.canvas.width=layer.canvas.height=0;
+      layer.rasterKey="";
+    }else{
+      if(layer.revision!==revision||layer.rotation!==viewport.rotation||layer.rasterKey!==raster.key){
+        const ctx=setupCanvas(layer.canvas,viewport.width,viewport.height,{region:raster.region,pixelRatio:raster.pixelRatio,maxPixels:NATIVE_INK_MAX_PIXELS});
+        drawStrokes(ctx,this.annotation.strokes.filter(s=>s.pageNumber===page.id).map(s=>toViewportStroke(s,viewport)));
+        layer.rasterKey=raster.key;this.diagnostics.displayRenders++;
+      }
+      layer.canvas.style.visibility="visible";
+    }
+    layer.revision=revision;layer.rotation=viewport.rotation;
   }
-  private removeLayer(layer:Layer):void{layer.el.remove();layer.canvas.width=layer.canvas.height=0;}
+  private rasterFor(page:NativePageView,viewport:PdfViewport):InkRaster {
+    return nativeInkRaster(viewport.width,viewport.height,page.div.getBoundingClientRect(),this.binding.viewer.container.getBoundingClientRect(),this.win.devicePixelRatio);
+  }
+  private removeLayer(layer:Layer):void{this.resizeObserver.unobserve(layer.page.div);layer.el.remove();layer.canvas.width=layer.canvas.height=0;}
   private pageForTarget(target:EventTarget|null):NativePageView|null{
     if(!target||typeof (target as Node).nodeType!=="number"||!this.binding.viewer.viewer.contains(target as Node))return null;
     const element=(target as Node).nodeType===1?target as Element:(target as Node).parentElement;
@@ -188,14 +211,14 @@ export class NativePdfInkController {
     if(this.input?.page===page&&this.input.live.isConnected&&this.input.viewport.rotation===page.viewport.rotation)return;
     this.releaseInput();const viewport=page.pdfPage!.getViewport({scale:1,rotation:page.viewport.rotation});
     const committed=this.doc.createElement("canvas"),live=this.doc.createElement("canvas");
+    const raster=this.rasterFor(page,viewport);
     committed.className="note-ink-native-committed";live.className="note-ink-native-live";
     committed.setAttribute("aria-hidden","true");live.setAttribute("aria-hidden","true");page.div.append(committed,live);
     const engine=new InkEngine(live,committed,this.binding.viewer.container,{nativeScroll:true,inputRoot:page.div,externalHistory:true,panOutsideCanvas:false,recoverPointerOnMove:false,
-      canvasMaxDpr:Math.min(3,Math.max(1,page.viewport.scale*(this.win.devicePixelRatio||1))),canvasMaxPixels:2_000_000,initialToolState:this.state,
+      canvasPixelRatio:raster.pixelRatio,canvasRegion:raster.region,canvasMaxPixels:NATIVE_INK_MAX_PIXELS,initialToolState:this.state,
       onChange:()=>this.commitInput(),onInputStart:()=>this.options.onInputStart(),onInputEnd:()=>{this.restorePenPage();this.options.onInputEnd();this.queueSync();}});
-    const width=Math.ceil(viewport.width),height=Math.ceil(viewport.height);engine.resize(width,height);
+    const width=viewport.width,height=viewport.height;engine.resize(width,height);
     this.input={page,viewport,engine,committed,live,width,height,reference:[]};this.diagnostics.inputMounts++;
-    committed.style.width=live.style.width="100%";committed.style.height=live.style.height="100%";
     engine.loadStrokes(this.localStrokes(this.input));this.input.reference=[...engine.getStrokeRefs()];this.layers.get(page.id)?.canvas.style.setProperty("visibility","hidden");
   }
   private localStrokes(input:Input):InkStroke[]{
@@ -226,5 +249,6 @@ export class NativePdfInkController {
     input.engine.flushPendingStrokes();this.commitInput();this.input=null;input.engine.destroy();
     input.committed.remove();input.live.remove();input.committed.width=input.committed.height=input.live.width=input.live.height=0;
     this.layers.get(input.page.id)?.canvas.style.setProperty("visibility","visible");this.diagnostics.inputReleases++;this.restorePenPage();
+    this.queueSync();
   }
 }
